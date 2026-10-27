@@ -1,0 +1,9 @@
+services:
+  aptekamos-mcp:
+    build: .
+    container_name: aptekamos-mcp
+    env_file: .env
+    ports:
+      # Loopback only: the reverse proxy terminates TLS and forwards here.
+      - "127.0.0.1:${HOST_PORT:-8130}:8130"
+    restart: unless-stopped

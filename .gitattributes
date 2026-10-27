@@ -1,0 +1,4 @@
+* text=auto
+*.sh text eol=lf
+*.go text eol=lf
+internal/aptekamos/testdata/** linguist-generated=true -diff
