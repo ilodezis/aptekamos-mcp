@@ -1,19 +1,29 @@
 #!/bin/bash
 # Runs on the server from the checkout: hard-sync to origin/main, rebuild, restart.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
 git symbolic-ref -q HEAD >/dev/null || { echo "checkout is on a detached HEAD: git switch main" >&2; exit 1; }
 git fetch origin
+PREV=$(git rev-parse HEAD)
 git reset --hard origin/main
 docker compose up -d --build --remove-orphans
 
 port="${HOST_PORT:-8130}"
-for _ in $(seq 1 30); do
+healthy=0
+for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
-    echo "aptekamos-mcp deployed"
-    exit 0
+    healthy=1
+    break
   fi
   sleep 1
 done
-echo "aptekamos-mcp did not answer on health check: docker compose logs --tail 50" >&2
-exit 1
+
+if [ "$healthy" -ne 1 ]; then
+  echo "ROLLBACK: aptekamos-mcp unhealthy after deploy — rolling back to $PREV" >&2
+  git reset --hard "$PREV"
+  docker compose up -d --build --remove-orphans
+  echo "ROLLBACK COMPLETE: restored $PREV" >&2
+  exit 1
+fi
+
+echo "aptekamos-mcp deployed"
