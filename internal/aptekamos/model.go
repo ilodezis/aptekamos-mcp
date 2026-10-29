@@ -59,6 +59,7 @@ type Card struct {
 	INN           string   `json:"inn,omitempty"`
 	INNID         int      `json:"inn_id,omitempty"`
 	Group         string   `json:"group,omitempty"`
+	GroupID       int      `json:"group_id,omitempty"`
 	Pharmacies    int      `json:"pharmacies"`
 	PriceMin      float64  `json:"price_min,omitempty"`
 	PriceMax      float64  `json:"price_max,omitempty"`
@@ -88,6 +89,10 @@ type Row struct {
 	Features   []string `json:"features,omitempty"`
 	// FeatureCounts says, for a network row, how many of its pharmacies have each feature.
 	FeatureCounts map[string]int `json:"feature_counts,omitempty"`
+	Lat           float64        `json:"lat,omitempty"`
+	Lng           float64        `json:"lng,omitempty"`
+	OpenStatus    string         `json:"open_status,omitempty"`
+	DistanceKm    float64        `json:"distance_km,omitempty"`
 }
 
 // BasketSummary is what the shopping list page says about the whole list.
@@ -110,6 +115,7 @@ type Instruction struct {
 	Name       string    `json:"name"`
 	INN        string    `json:"inn,omitempty"`
 	Group      string    `json:"group,omitempty"`
+	GroupID    int       `json:"group_id,omitempty"`
 	Sections   []Section `json:"sections"`
 	ATC        []string  `json:"atc,omitempty"`
 	ICD10      []string  `json:"icd10,omitempty"`
@@ -126,6 +132,7 @@ type Pharmacy struct {
 	Metro           string   `json:"metro,omitempty"`
 	Directions      string   `json:"directions,omitempty"`
 	Phones          []string `json:"phones,omitempty"`
+	Features        []string `json:"features,omitempty"`
 	Hours           []string `json:"hours,omitempty"`
 	OpenNow         *bool    `json:"open_now,omitempty"`
 	OpenStatus      string   `json:"open_status,omitempty"`
@@ -136,7 +143,7 @@ type Pharmacy struct {
 	OrderConditions string   `json:"order_conditions,omitempty"`
 	Lat             float64  `json:"lat,omitempty"`
 	Lng             float64  `json:"lng,omitempty"`
-	Open24h         bool     `json:"open_24h,omitempty"`
+	Open24h         bool     `json:"-"`
 	URL             string   `json:"url"`
 }
 
@@ -163,14 +170,17 @@ type MapPharmacy struct {
 	Metro         string   `json:"metro,omitempty"`
 	Directions    string   `json:"directions,omitempty"`
 	Phones        []string `json:"phones,omitempty"`
-	Lat           float64  `json:"lat"`
-	Lng           float64  `json:"lng"`
-	Open24h       bool     `json:"open_24h,omitempty"`
+	Features      []string `json:"features,omitempty"`
+	OpenNow       *bool    `json:"open_now,omitempty"`
 	OpenStatus    string   `json:"open_status,omitempty"`
 	PriceListDate string   `json:"price_list_date,omitempty"`
-	OnlineOrder   bool     `json:"online_order,omitempty"`
 	PriceMin      float64  `json:"price_min,omitempty"`
+	Lat           float64  `json:"lat"`
+	Lng           float64  `json:"lng"`
 	DistanceKm    float64  `json:"distance_km,omitempty"`
+
+	Open24h     bool `json:"-"`
+	OnlineOrder bool `json:"-"`
 }
 
 // Place is a region, city or district of the location tree.

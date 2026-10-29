@@ -130,14 +130,14 @@ func TestSearchAndBrowse(t *testing.T) {
 func TestCardInstructionSubstitutes(t *testing.T) {
 	cs, _ := session(t)
 	card := mustCall(t, cs, "drug_card", map[string]any{"drug_id": 13270})
-	if card["name"] != "Тардиферон таблетки 80мг" || card["brand_id"].(float64) != 8826 {
+	if card["name"] != "Тардиферон таблетки 80мг" || card["brand_id"].(float64) != 8826 || card["group_id"].(float64) != 308 {
 		t.Errorf("card = %v", card)
 	}
 	if _, isErr := call(t, cs, "drug_card", map[string]any{"brand_id": 7863}); !isErr {
 		t.Error("brand without form accepted")
 	}
 	ins := mustCall(t, cs, "drug_instruction", map[string]any{"drug_id": 13270, "sections": []any{"противопоказ"}})
-	if len(list(ins, "sections")) != 1 || len(list(ins, "icd10")) != 19 {
+	if len(list(ins, "sections")) != 1 || len(list(ins, "icd10")) != 19 || ins["group_id"].(float64) != 308 {
 		t.Errorf("instruction = %v", ins)
 	}
 	sub := mustCall(t, cs, "substitutes", map[string]any{"drug_id": 13270})
@@ -182,6 +182,16 @@ func TestNearestAndPharmacyTools(t *testing.T) {
 	if len(ph) != 2 || ph[0].(map[string]any)["pharmacy_id"].(float64) != 26833 {
 		t.Errorf("nearest = %v", ph)
 	}
+	firstNear := ph[0].(map[string]any)
+	if _, ok := firstNear["online_order"]; ok {
+		t.Errorf("online_order should not be a separate bool: %v", firstNear)
+	}
+	if _, ok := firstNear["open_24h"]; ok {
+		t.Errorf("open_24h should not be a separate bool: %v", firstNear)
+	}
+	if firstNear["open_now"] != false {
+		t.Errorf("open_now = %v, want false", firstNear["open_now"])
+	}
 	if path, _ := site.Last(t); !strings.HasSuffix(path, "/ceni/na-karte") {
 		t.Errorf("request = %s", path)
 	}
@@ -190,7 +200,7 @@ func TestNearestAndPharmacyTools(t *testing.T) {
 	}
 
 	card := mustCall(t, cs, "pharmacy_card", map[string]any{"pharmacy_id": 24084})
-	if card["order_conditions"] != "Самовывоз в течение 72 часов" || card["takes_orders"] != true {
+	if card["order_conditions"] != "Самовывоз в течение 72 часов" || card["takes_orders"] != true || len(list(card, "features")) == 0 {
 		t.Errorf("pharmacy = %v", card)
 	}
 	offer := mustCall(t, cs, "price_at_pharmacy", map[string]any{"pharmacy_id": 27324, "brand_id": 7863, "form_id": 34})

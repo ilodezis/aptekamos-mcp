@@ -85,8 +85,15 @@ func TestBrowseAndSubstitutesShareTheRowShape(t *testing.T) {
 		"substitutes": {"drug_id": 13270, "available_only": true},
 	} {
 		out := mustCall(t, cs, name, args)
-		if _, ok := out["common"]; !ok {
-			t.Errorf("%s: no common", name)
+		common, ok := out["common"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: no common", name)
+		}
+		if name == "browse" && common["inn_id"] != float64(17562) {
+			t.Errorf("browse common inn_id = %v, want 17562", common["inn_id"])
+		}
+		if name == "substitutes" && common["inn_id"] != float64(326) {
+			t.Errorf("substitutes common = %v, want inn_id 326", common)
 		}
 		for _, p := range list(out, "products") {
 			row := obj(p)

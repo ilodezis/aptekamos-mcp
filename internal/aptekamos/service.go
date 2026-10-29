@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -296,6 +297,25 @@ func (s *Service) Browse(ctx context.Context, kind string, id int, region string
 		return ProductList{}, err
 	}
 	l, err := s.productList(ctx, fmt.Sprintf("%s/tovary/%s-x-%d", r.prefix(), prefix, id))
+	if err == nil {
+		for i := range l.Products {
+			p := &l.Products[i]
+			switch kind {
+			case "inn":
+				if p.INNID == 0 {
+					p.INNID = id
+				}
+			case "group":
+				if p.GroupID == 0 {
+					p.GroupID = id
+				}
+			case "brand":
+				if p.BrandID == 0 {
+					p.BrandID = id
+				}
+			}
+		}
+	}
 	return l, notFound(err, fmt.Sprintf("%s_id %d", kind, id))
 }
 
@@ -539,6 +559,13 @@ func (s *Service) OfferAt(ctx context.Context, pharmacyID int, t Target, region 
 		o.Pharmacy.ID = pharmacyID
 	}
 	o.Pharmacy.URL = siteHost + fmt.Sprintf("/magaziny/org-x-%d", o.Pharmacy.ID)
+	if o.Pharmacy.TakesOrders && o.Pharmacy.OrderConditions == "" {
+		if cp, err := s.fetch(ctx, fmt.Sprintf("%s/magaziny/org-x-%d/usloviya-zakaza?pm=modal", r.prefix(), o.Pharmacy.ID), ttlReference); err == nil {
+			if cd, err := cp.Doc(); err == nil {
+				o.Pharmacy.OrderConditions = parseOrderConditions(cd)
+			}
+		}
+	}
 	if o.Items == nil {
 		o.Items = []PriceItem{}
 	}
@@ -584,6 +611,9 @@ func (s *Service) Pharmacy(ctx context.Context, id int) (Pharmacy, error) {
 				for _, pin := range pins {
 					if pin.ID == id {
 						ph.Lat, ph.Lng, ph.Open24h = pin.Lat, pin.Lng, pin.Open24h
+						if pin.Open24h && !slices.Contains(ph.Features, Feature24h) {
+							ph.Features = append(ph.Features, Feature24h)
+						}
 					}
 				}
 			}
@@ -659,6 +689,23 @@ func (s *Service) Substitutes(ctx context.Context, t Target, region string) (Pro
 		path = r.prefix() + path
 	}
 	l, err := s.productList(ctx, path)
+	if err == nil {
+		for i := range l.Products {
+			p := &l.Products[i]
+			if p.INN == "" && c.INN != "" {
+				p.INN = c.INN
+			}
+			if p.INNID == 0 && c.INNID != 0 {
+				p.INNID = c.INNID
+			}
+			if p.Group == "" && c.Group != "" {
+				p.Group = c.Group
+			}
+			if p.GroupID == 0 && c.GroupID != 0 {
+				p.GroupID = c.GroupID
+			}
+		}
+	}
 	l.Products = withoutSource(l.Products, t, c)
 	return l, err
 }

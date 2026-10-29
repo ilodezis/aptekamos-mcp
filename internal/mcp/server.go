@@ -295,7 +295,16 @@ func (s *Server) registerTools() {
 			productArgs
 			Region string `json:"region"`
 		}) (any, error) {
-			return s.svc.CardWithPacks(ctx, a.target(), a.Region)
+			c, err := s.svc.CardWithPacks(ctx, a.target(), a.Region)
+			if err != nil {
+				return nil, err
+			}
+			if c.GroupID == 0 && c.DrugID > 0 {
+				if ins, err := s.svc.Instruction(ctx, c.DrugID); err == nil && ins.GroupID > 0 {
+					c.GroupID = ins.GroupID
+				}
+			}
+			return c, nil
 		})
 
 	addTool(s, &mcp.Tool{

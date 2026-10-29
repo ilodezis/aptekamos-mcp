@@ -156,6 +156,7 @@ type instructionView struct {
 	Name       string               `json:"name"`
 	INN        string               `json:"inn,omitempty"`
 	Group      string               `json:"group,omitempty"`
+	GroupID    int                  `json:"group_id,omitempty"`
 	ATC        []string             `json:"atc,omitempty"`
 	ICD10      []string             `json:"icd10,omitempty"`
 	Conditions []string             `json:"conditions,omitempty"`
@@ -181,7 +182,7 @@ func small(list []string) bool {
 // shapeInstruction gives an overview (every section shortened) when no sections are asked for,
 // and the full text of the sections whose title contains one of the asked-for words otherwise.
 func shapeInstruction(ins aptekamos.Instruction, sections []string, maxChars int) instructionView {
-	v := instructionView{DrugID: ins.DrugID, Name: ins.Name, INN: ins.INN, Group: ins.Group, ATC: ins.ATC, URL: ins.URL,
+	v := instructionView{DrugID: ins.DrugID, Name: ins.Name, INN: ins.INN, Group: ins.Group, GroupID: ins.GroupID, ATC: ins.ATC, URL: ins.URL,
 		Sections: []instructionSection{}}
 	if len(sections) == 0 {
 		limit := overviewChars

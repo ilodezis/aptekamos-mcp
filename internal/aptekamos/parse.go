@@ -107,9 +107,10 @@ func parseCard(doc *goquery.Document) Card {
 		block = doc.Selection
 	}
 	c := Card{
-		Name:  text(block.Find(".am-pc-product-name").First()),
-		INN:   text(block.Find(".am-pc-product-inter-val").First()),
-		Group: text(block.Find(".am-pc-product-phg").First()),
+		Name:    text(block.Find(".am-pc-product-name").First()),
+		INN:     text(block.Find(".am-pc-product-inter-val").First()),
+		Group:   text(block.Find(".am-pc-product-phg").First()),
+		GroupID: segmentID(attrLink(doc.Find(".am-pc-product-analogs, .am-pc-product-analogs-btn").First(), "data-go-to-link", "href"), "phg"),
 	}
 
 	replace := attrLink(doc.Find(".am-pc-product-replace").First(), "data-go-to-link")
@@ -264,9 +265,10 @@ func parseBasketSummary(doc *goquery.Document) BasketSummary {
 // parseInstruction reads the leaflet page (/instrukciya).
 func parseInstruction(doc *goquery.Document) Instruction {
 	ins := Instruction{
-		Name:  text(doc.Find(".am-pc-product-name").First()),
-		INN:   text(doc.Find(".am-pc-product-inter-val").First()),
-		Group: text(doc.Find(".am-pc-product-phg").First()),
+		Name:    text(doc.Find(".am-pc-product-name").First()),
+		INN:     text(doc.Find(".am-pc-product-inter-val").First()),
+		Group:   text(doc.Find(".am-pc-product-phg").First()),
+		GroupID: segmentID(attrLink(doc.Find(".am-pc-product-analogs, .am-pc-product-analogs-btn").First(), "data-go-to-link", "href"), "phg"),
 	}
 	doc.Find(".am-pc-medicine-atc").Each(func(_ int, s *goquery.Selection) { ins.ATC = append(ins.ATC, text(s)) })
 	doc.Find(".am-pc-medicine-mkb").Each(func(_ int, s *goquery.Selection) { ins.ICD10 = append(ins.ICD10, text(s)) })
@@ -342,6 +344,30 @@ func parsePharmacy(doc *goquery.Document) Pharmacy {
 				p.OrderOptions = append(p.OrderOptions, t)
 			}
 		})
+	}
+	if p.Open24h || strings.Contains(strings.ToLower(p.OpenStatus), "круглосуточно") || strings.Contains(strings.ToLower(strings.Join(p.Hours, " ")), "круглосуточно") {
+		p.Open24h = true
+		if !slices.Contains(p.Features, Feature24h) {
+			p.Features = append(p.Features, Feature24h)
+		}
+	}
+	if p.TakesOrders {
+		if !slices.Contains(p.Features, FeatureOnlineOrder) {
+			p.Features = append(p.Features, FeatureOnlineOrder)
+		}
+	}
+	for _, opt := range p.OrderOptions {
+		optL := strings.ToLower(opt)
+		if strings.Contains(optL, "бронир") || strings.Contains(optL, "резерв") {
+			if !slices.Contains(p.Features, FeatureReserve) {
+				p.Features = append(p.Features, FeatureReserve)
+			}
+		}
+		if strings.Contains(optL, "доставк") {
+			if !slices.Contains(p.Features, FeatureDelivery) {
+				p.Features = append(p.Features, FeatureDelivery)
+			}
+		}
 	}
 	return p
 }
@@ -443,10 +469,28 @@ func parseMapPharmacies(doc *goquery.Document) ([]MapPharmacy, error) {
 	}
 	out := make([]MapPharmacy, 0, len(orgs))
 	for _, o := range orgs {
+		status := cleanText(o.OpenTime)
+		var openNow *bool
+		if status != "" {
+			statusL := strings.ToLower(status)
+			if strings.HasPrefix(statusL, "открыт") || strings.Contains(statusL, "круглосуточно") {
+				v := true
+				openNow = &v
+			} else if strings.HasPrefix(statusL, "закрыт") || strings.HasPrefix(statusL, "откроет") {
+				v := false
+				openNow = &v
+			}
+		}
 		p := MapPharmacy{
 			ID: o.ID, Name: cleanText(o.Name), Address: cleanText(o.Address), Metro: cleanText(o.Metro),
 			Directions: cleanText(o.Path), Phones: splitPhones(o.Phones), Lat: o.Lat, Lng: o.Lng,
-			Open24h: o.FullDay == 1, OpenStatus: cleanText(o.OpenTime), PriceListDate: formatISODate(o.SendDate), OnlineOrder: o.HasOrder == 1,
+			Open24h: o.FullDay == 1, OpenNow: openNow, OpenStatus: status, PriceListDate: formatISODate(o.SendDate), OnlineOrder: o.HasOrder == 1,
+		}
+		if p.Open24h || strings.Contains(strings.ToLower(status), "круглосуточно") {
+			p.Features = append(p.Features, Feature24h)
+		}
+		if p.OnlineOrder {
+			p.Features = append(p.Features, FeatureOnlineOrder)
 		}
 		p.PriceMin, _ = parsePriceRange(o.MinPriceStr)
 		out = append(out, p)
