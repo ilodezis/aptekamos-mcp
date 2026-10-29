@@ -609,10 +609,13 @@ func (s *Service) Pharmacy(ctx context.Context, id int) (Pharmacy, error) {
 		if md, err := mp.Doc(); err == nil {
 			if pins, err := parseMapPharmacies(md); err == nil {
 				for _, pin := range pins {
-					if pin.ID == id {
-						ph.Lat, ph.Lng, ph.Open24h = pin.Lat, pin.Lng, pin.Open24h
-						if pin.Open24h && !slices.Contains(ph.Features, Feature24h) {
-							ph.Features = append(ph.Features, Feature24h)
+					if pin.ID == id || pin.PharmacyID == id {
+						ph.Lat, ph.Lng = pin.Lat, pin.Lng
+						if slices.Contains(pin.Features, Feature24h) {
+							ph.Open24h = true
+							if !slices.Contains(ph.Features, Feature24h) {
+								ph.Features = append(ph.Features, Feature24h)
+							}
 						}
 					}
 				}

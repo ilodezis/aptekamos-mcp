@@ -221,6 +221,7 @@ func parseRows(doc *goquery.Document) []Row {
 			if r.PharmacyID == 0 {
 				r.PharmacyID = segmentID(attrLink(s.Find(".am-pc-org-name").First(), "data-go-to-link", "href"), "org")
 			}
+			r.ID = r.PharmacyID
 			s.Find("a.am-pc-org-phone").Each(func(_ int, a *goquery.Selection) {
 				if p := text(a); p != "" {
 					r.Phones = append(r.Phones, p)
@@ -302,18 +303,23 @@ func parseInstruction(doc *goquery.Document) Instruction {
 // parsePharmacy reads a pharmacy card; offer pages (/kupit/org-…) carry the same header.
 func parsePharmacy(doc *goquery.Document) Pharmacy {
 	p := Pharmacy{
-		Name:            text(doc.Find("#am-pc-org-name")),
-		Address:         text(doc.Find("#am-pc-org-addr-txt")),
-		Metro:           text(doc.Find("#am-pc-org-metro-txt")),
+		Row: Row{
+			Name:       text(doc.Find("#am-pc-org-name")),
+			Address:    text(doc.Find("#am-pc-org-addr-txt")),
+			Metro:      text(doc.Find("#am-pc-org-metro-txt")),
+			OpenStatus: text(doc.Find("#am-pc-org-open-time")),
+		},
 		Directions:      text(doc.Find("#am-pc-org-path-txt")),
 		PriceListDate:   formatISODate(text(doc.Find("#am-pc-org-pl-info-last-updated-val"))),
 		PriceListItems:  parseCount(text(doc.Find("#am-pc-org-pl-info-count-val"))),
 		OrderConditions: parseOrderConditions(doc),
 	}
-	p.ID = segmentID(attrLink(doc.Find(".am-pc-org-fav").First(), "data-link"), "org")
-	if p.ID == 0 {
-		p.ID = queryInt(attrLink(doc.Find("#am-pc-org-map").First(), "data-link"), "o")
+	id := segmentID(attrLink(doc.Find(".am-pc-org-fav").First(), "data-link"), "org")
+	if id == 0 {
+		id = queryInt(attrLink(doc.Find("#am-pc-org-map").First(), "data-link"), "o")
 	}
+	p.PharmacyID = id
+	p.ID = id
 	open := doc.Find("#am-pc-org-open-time")
 	p.OpenStatus = text(open)
 	if class, _ := open.Attr("class"); p.OpenStatus != "" {
@@ -490,26 +496,15 @@ func parseMapPharmacies(doc *goquery.Document) ([]MapPharmacy, error) {
 	out := make([]MapPharmacy, 0, len(orgs))
 	for _, o := range orgs {
 		status := cleanText(o.OpenTime)
-		var openNow *bool
-		if status != "" {
-			statusL := strings.ToLower(status)
-			if strings.HasPrefix(statusL, "открыт") || strings.Contains(statusL, "круглосуточно") {
-				v := true
-				openNow = &v
-			} else if strings.HasPrefix(statusL, "закрыт") || strings.HasPrefix(statusL, "откроет") {
-				v := false
-				openNow = &v
-			}
-		}
 		p := MapPharmacy{
-			ID: o.ID, Name: cleanText(o.Name), Address: cleanText(o.Address), Metro: cleanText(o.Metro),
-			Directions: cleanText(o.Path), Phones: splitPhones(o.Phones), Lat: o.Lat, Lng: o.Lng,
-			Open24h: o.FullDay == 1, OpenNow: openNow, OpenStatus: status, PriceListDate: formatISODate(o.SendDate), OnlineOrder: o.HasOrder == 1,
+			PharmacyID: o.ID, ID: o.ID, Name: cleanText(o.Name), Address: cleanText(o.Address), Metro: cleanText(o.Metro),
+			Phones: splitPhones(o.Phones), Lat: o.Lat, Lng: o.Lng,
+			OpenStatus: status,
 		}
-		if p.Open24h || strings.Contains(strings.ToLower(status), "круглосуточно") {
+		if o.FullDay == 1 || strings.Contains(strings.ToLower(status), "круглосуточно") {
 			p.Features = append(p.Features, Feature24h)
 		}
-		if p.OnlineOrder {
+		if o.HasOrder == 1 {
 			p.Features = append(p.Features, FeatureOnlineOrder)
 		}
 		p.PriceMin, _ = parsePriceRange(o.MinPriceStr)

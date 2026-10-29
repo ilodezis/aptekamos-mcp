@@ -151,7 +151,7 @@ func TestFillIDsReadsCardsForTheGivenRows(t *testing.T) {
 
 // One name for a pharmacy id everywhere, and the page address on the offer.
 func TestPharmacyJSONUsesPharmacyID(t *testing.T) {
-	for name, v := range map[string]any{"Pharmacy": Pharmacy{ID: 7}, "MapPharmacy": MapPharmacy{ID: 7}} {
+	for name, v := range map[string]any{"Pharmacy": Pharmacy{Row: Row{PharmacyID: 7, ID: 7}}, "MapPharmacy": MapPharmacy{PharmacyID: 7, ID: 7}} {
 		raw, _ := json.Marshal(v)
 		var m map[string]any
 		_ = json.Unmarshal(raw, &m)

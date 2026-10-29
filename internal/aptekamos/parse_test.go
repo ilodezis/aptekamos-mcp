@@ -393,7 +393,7 @@ func TestParseMap(t *testing.T) {
 	}
 	p := one[0]
 	if p.ID != 27324 || p.Lat != 55.725137 || p.Lng != 37.574207 || p.Name != "Аптека Хамовники" || p.Metro != "Фрунзенская, Спортивная" ||
-		p.OpenStatus != "Откроется в ср. в 09:00" || p.PriceListDate != "2026-10-27T20:00:00+03:00" || p.Open24h || p.OnlineOrder {
+		p.OpenStatus != "Откроется в ср. в 09:00" || slices.Contains(p.Features, Feature24h) || slices.Contains(p.Features, FeatureOnlineOrder) {
 		t.Errorf("map pharmacy = %+v", p)
 	}
 	if !slices.Equal(p.Phones, []string{"+7(495)609-11-29"}) {

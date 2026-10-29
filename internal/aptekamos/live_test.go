@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -230,7 +231,7 @@ func TestLivePharmaciesAndReference(t *testing.T) {
 		t.Errorf("streets = %+v, %v", streets, err)
 	}
 	near, err := s.Nearest(ctx, nil, 55.7539, 37.6208, Filters{Open24h: true}, "", 3, 0)
-	if err != nil || len(near.Pharmacies) != 3 || !near.Pharmacies[0].Open24h {
+	if err != nil || len(near.Pharmacies) != 3 || !slices.Contains(near.Pharmacies[0].Features, Feature24h) {
 		t.Errorf("nearest 24h = %+v, %v", near.Pharmacies, err)
 	}
 }

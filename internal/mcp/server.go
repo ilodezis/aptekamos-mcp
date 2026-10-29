@@ -228,11 +228,17 @@ func page[T any](items []T, p pageArgs) []T {
 	return items[p.Offset:end]
 }
 
+// listingCommon holds the common block for pharmacy listings.
+type listingCommon struct {
+	PriceNote string `json:"price_note,omitempty"`
+}
+
 // listingPage is a pharmacy table cut to the requested rows.
 type listingPage struct {
 	Product   any                      `json:"product,omitempty"`
 	List      *aptekamos.BasketSummary `json:"list,omitempty"`
 	Total     int                      `json:"pharmacies"`
+	Common    *listingCommon           `json:"common,omitempty"`
 	PriceNote string                   `json:"price_note,omitempty"`
 	RowsTotal int                      `json:"rows_total"`
 	Offset    int                      `json:"offset"`
@@ -240,12 +246,28 @@ type listingPage struct {
 	URL       string                   `json:"url"`
 }
 
+const listPricesNote = "list prices are whole roubles as shown by the site; price_at_pharmacy has exact prices"
+
 func pageListing(l aptekamos.Listing, p pageArgs, includeProduct bool) listingPage {
 	product := briefProduct(l.Card)
 	if includeProduct && l.Card != nil {
 		product = l.Card
 	}
-	return listingPage{Product: product, List: l.Summary, Total: l.Total, PriceNote: l.PriceNote, RowsTotal: len(l.Rows), Offset: p.Offset, Rows: page(l.Rows, p), URL: l.URL}
+	var common *listingCommon
+	if l.Card != nil || l.Summary != nil {
+		common = &listingCommon{PriceNote: listPricesNote}
+	}
+	return listingPage{
+		Product:   product,
+		List:      l.Summary,
+		Total:     l.Total,
+		Common:    common,
+		PriceNote: l.PriceNote,
+		RowsTotal: len(l.Rows),
+		Offset:    p.Offset,
+		Rows:      page(l.Rows, p),
+		URL:       l.URL,
+	}
 }
 
 // productsPage is a product list cut to the requested items.
@@ -423,8 +445,8 @@ func (s *Server) registerTools() {
 
 	addTool(s, &mcp.Tool{
 		Name: "pharmacy_card",
-		Description: "A pharmacy's card: address, metro, how to get there, phones, opening hours and whether " +
-			"it is open now, price list date and size, whether it takes orders and on what terms, coordinates.",
+		Description: "A pharmacy's card: address, metro, how to get there (directions), phones, opening hours " +
+			"and status, price list date and size, order terms (options, conditions, online_order feature), coordinates.",
 	}, object(props{"pharmacy_id": intProp("Pharmacy.", 1)}, "pharmacy_id"),
 		func(ctx context.Context, a struct {
 			PharmacyID int `json:"pharmacy_id"`

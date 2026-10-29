@@ -36,7 +36,7 @@ AptekaMos collects the price lists of thousands of pharmacies: about 5,000 in Mo
 | `where_to_buy` | Pharmacies selling a product: price, address, metro, phones, in stock / reserve / delivery / 24h / sale / online order; filters by location, metro, chain, street, pack, maker, price; sorting |
 | `nearest_pharmacies` | Closest pharmacies to a point with distance and the product's lowest price there; covers every matching pharmacy, not just the first 250 table rows |
 | `price_at_pharmacy` | The exact packs of a product in one pharmacy and their prices; the same pack held at several prices is one item (`price` = lowest, `prices` = all), `units` and `unit_price` for packs of 2+ |
-| `pharmacy_card` | Address, directions, phones, hours, open now, price list date and size, order terms, coordinates |
+| `pharmacy_card` | Address, directions, phones, hours, opening status, price list date and size, order terms, coordinates |
 | `pharmacy_price_list` | Search one pharmacy's whole price list |
 | `find_pharmacies` | Pharmacies of a region by location, metro, chain, street, name, features |
 | `substitutes` | Other brands and forms with the same active substance |
@@ -141,7 +141,7 @@ Not affiliated with AptekaMos or its owner. For personal, non-commercial use; re
 | `where_to_buy` | Аптеки с препаратом: цена, адрес, метро, телефоны, наличие / бронь / доставка / круглосуточно / акция / онлайн-заказ; фильтры по месту, метро, сети, улице, фасовке, производителю, цене; сортировка |
 | `nearest_pharmacies` | Ближайшие к точке аптеки с расстоянием и минимальной ценой препарата; по всем подходящим аптекам, а не по первым 250 строкам таблицы |
 | `price_at_pharmacy` | Конкретные упаковки препарата в одной аптеке и их цены; одна фасовка по нескольким ценам сводится в одну позицию (`price` — минимальная, `prices` — все), `units` и `unit_price` для упаковок от 2 шт. |
-| `pharmacy_card` | Адрес, как пройти, телефоны, часы работы, открыта ли сейчас, дата и размер прайса, условия заказа, координаты |
+| `pharmacy_card` | Адрес, как пройти, телефоны, часы работы, статус работы, дата и размер прайса, условия заказа, координаты |
 | `pharmacy_price_list` | Поиск по всему прайсу одной аптеки |
 | `find_pharmacies` | Аптеки региона по месту, метро, сети, улице, названию, услугам |
 | `substitutes` | Другие торговые названия и формы с тем же действующим веществом |

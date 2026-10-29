@@ -28,6 +28,8 @@ var routes = []struct {
 	fixture string
 }{
 	{regexp.MustCompile(`-117477/kupit/zameni$`), "inn_tirz.html"},
+	{regexp.MustCompile(`^/tovary/lekarstva/x-1/x-11562/ceni$`), "where_zhivika.html"},
+	{regexp.MustCompile(`/med-x-11562/kupit/org-x-29199$`), "offer_zhivika.html"},
 	{regexp.MustCompile(`/med-x-117477/kupit/org-x-\d+$`), "offer_tirz.html"},
 	{regexp.MustCompile(`^/tovary/lekarstva/x-1/x-117477/ceni$`), "drug_packs.html"},
 	{regexp.MustCompile(`^/tovary/lekarstva/x-1/x-117\d{3}/ceni$`), "drug_tirz.html"},
@@ -49,7 +51,7 @@ var routes = []struct {
 	{regexp.MustCompile(`^/tovary/phg-x-\d+$`), "group.html"},
 	{regexp.MustCompile(`^/tovary/trd-x-\d+$`), "brand.html"},
 	{regexp.MustCompile(`^/tovary$`), "search.html"},
-	{regexp.MustCompile(`^/magaziny/org-x-24084/usloviya-zakaza$`), "order_conditions_online.html"},
+	{regexp.MustCompile(`^/magaziny/org-x-\d+/usloviya-zakaza$`), "order_conditions_online.html"},
 	{regexp.MustCompile(`^/magaziny/org-x-\d+/price-list$`), "price_list.html"},
 	{regexp.MustCompile(`^/magaziny/org-x-24084$`), "pharmacy_order.html"},
 	{regexp.MustCompile(`^/magaziny/org-x-27324$`), "pharmacy.html"},

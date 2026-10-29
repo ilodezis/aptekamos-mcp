@@ -73,25 +73,28 @@ type Card struct {
 	substitutesPath string
 }
 
-// Row is one line of a pharmacy table: a single pharmacy or a folded network.
+// Row is a pharmacy or network line of a list: where_to_buy, find_pharmacies, shopping_list,
+// or nearest_pharmacies. A single pharmacy has pharmacy_id, name, address, metro, phones, features
+// and, when the source page carries them, coordinates (lat/lng), open_status and distance_km.
 type Row struct {
-	Kind       string   `json:"kind"`
-	PharmacyID int      `json:"pharmacy_id,omitempty"`
-	NetworkID  int      `json:"network_id,omitempty"`
-	Name       string   `json:"name"`
-	Address    string   `json:"address,omitempty"`
-	Metro      string   `json:"metro,omitempty"`
-	Phones     []string `json:"phones,omitempty"`
-	PriceMin   float64  `json:"price_min,omitempty"`
-	PriceMax   float64  `json:"price_max,omitempty"`
-	PriceNote  string   `json:"price_note,omitempty"`
-	Pharmacies int      `json:"pharmacies,omitempty"`
-	Features   []string `json:"features,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
+	PharmacyID    int            `json:"pharmacy_id,omitempty"`
+	ID            int            `json:"-"`
+	NetworkID     int            `json:"network_id,omitempty"`
+	Name          string         `json:"name"`
+	Address       string         `json:"address,omitempty"`
+	Metro         string         `json:"metro,omitempty"`
+	Phones        []string       `json:"phones,omitempty"`
+	PriceMin      float64        `json:"price_min,omitempty"`
+	PriceMax      float64        `json:"price_max,omitempty"`
+	PriceNote     string         `json:"price_note,omitempty"`
+	Pharmacies    int            `json:"pharmacies,omitempty"`
+	Features      []string       `json:"features,omitempty"`
 	// FeatureCounts says, for a network row, how many of its pharmacies have each feature.
 	FeatureCounts map[string]int `json:"feature_counts,omitempty"`
+	OpenStatus    string         `json:"open_status,omitempty"`
 	Lat           float64        `json:"lat,omitempty"`
 	Lng           float64        `json:"lng,omitempty"`
-	OpenStatus    string         `json:"open_status,omitempty"`
 	DistanceKm    float64        `json:"distance_km,omitempty"`
 }
 
@@ -124,27 +127,20 @@ type Instruction struct {
 	URL        string    `json:"url"`
 }
 
-// Pharmacy is a pharmacy's own card.
+// Pharmacy is a pharmacy's own card: the pharmacy row plus its card-only fields.
 type Pharmacy struct {
-	ID              int      `json:"pharmacy_id"`
-	Name            string   `json:"name"`
-	Address         string   `json:"address,omitempty"`
-	Metro           string   `json:"metro,omitempty"`
-	Directions      string   `json:"directions,omitempty"`
-	Phones          []string `json:"phones,omitempty"`
-	Features        []string `json:"features,omitempty"`
+	Row
 	Hours           []string `json:"hours,omitempty"`
-	OpenNow         *bool    `json:"open_now,omitempty"`
-	OpenStatus      string   `json:"open_status,omitempty"`
-	PriceListDate   string   `json:"price_list_date,omitempty"`
-	PriceListItems  int      `json:"price_list_items,omitempty"`
-	TakesOrders     bool     `json:"takes_orders"`
 	OrderOptions    []string `json:"order_options,omitempty"`
 	OrderConditions string   `json:"order_conditions,omitempty"`
-	Lat             float64  `json:"lat,omitempty"`
-	Lng             float64  `json:"lng,omitempty"`
-	Open24h         bool     `json:"-"`
-	URL             string   `json:"url"`
+	Directions      string   `json:"directions,omitempty"`
+	PriceListDate   string   `json:"price_list_date,omitempty"`
+	PriceListItems  int      `json:"price_list_items,omitempty"`
+	URL             string   `json:"url,omitempty"`
+
+	TakesOrders bool  `json:"-"`
+	OpenNow     *bool `json:"-"`
+	Open24h     bool  `json:"-"`
 }
 
 // PriceItem is one line of a pharmacy's price list or offer: the exact pack and its price.
@@ -161,27 +157,8 @@ type PriceItem struct {
 	UnitPrice float64   `json:"unit_price,omitempty"`
 }
 
-// MapPharmacy is a pharmacy as the site's map knows it: with coordinates, and with the lowest
-// price when the map was opened for a product.
-type MapPharmacy struct {
-	ID            int      `json:"pharmacy_id"`
-	Name          string   `json:"name"`
-	Address       string   `json:"address,omitempty"`
-	Metro         string   `json:"metro,omitempty"`
-	Directions    string   `json:"directions,omitempty"`
-	Phones        []string `json:"phones,omitempty"`
-	Features      []string `json:"features,omitempty"`
-	OpenNow       *bool    `json:"open_now,omitempty"`
-	OpenStatus    string   `json:"open_status,omitempty"`
-	PriceListDate string   `json:"price_list_date,omitempty"`
-	PriceMin      float64  `json:"price_min,omitempty"`
-	Lat           float64  `json:"lat"`
-	Lng           float64  `json:"lng"`
-	DistanceKm    float64  `json:"distance_km,omitempty"`
-
-	Open24h     bool `json:"-"`
-	OnlineOrder bool `json:"-"`
-}
+// MapPharmacy is an alias for Row used by the nearest_pharmacies tool and map parser.
+type MapPharmacy = Row
 
 // Place is a region, city or district of the location tree.
 type Place struct {

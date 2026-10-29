@@ -191,8 +191,8 @@ func TestNearestAndPharmacyTools(t *testing.T) {
 	if _, ok := firstNear["open_24h"]; ok {
 		t.Errorf("open_24h should not be a separate bool: %v", firstNear)
 	}
-	if firstNear["open_now"] != false {
-		t.Errorf("open_now = %v, want false", firstNear["open_now"])
+	if _, ok := firstNear["open_now"]; ok {
+		t.Errorf("open_now should not be a separate bool: %v", firstNear)
 	}
 	if path, _ := site.Last(t); !strings.HasSuffix(path, "/ceni/na-karte") {
 		t.Errorf("request = %s", path)
@@ -202,8 +202,14 @@ func TestNearestAndPharmacyTools(t *testing.T) {
 	}
 
 	card := mustCall(t, cs, "pharmacy_card", map[string]any{"pharmacy_id": 24084})
-	if card["order_conditions"] != "Самовывоз в течение 72 часов" || card["takes_orders"] != true || len(list(card, "features")) == 0 {
+	if card["order_conditions"] != "Самовывоз в течение 72 часов" || len(list(card, "features")) == 0 {
 		t.Errorf("pharmacy = %v", card)
+	}
+	if _, ok := card["takes_orders"]; ok {
+		t.Errorf("takes_orders should not be a separate bool: %v", card)
+	}
+	if _, ok := card["open_now"]; ok {
+		t.Errorf("open_now should not be a separate bool: %v", card)
 	}
 	offer := mustCall(t, cs, "price_at_pharmacy", map[string]any{"pharmacy_id": 27324, "brand_id": 7863, "form_id": 34})
 	items := list(offer, "items")
@@ -386,5 +392,155 @@ func TestVersionFormatting(t *testing.T) {
 	fallback := fmt.Sprintf("1.0.0 (Go %s, commit dev, built unknown)", runtime.Version())
 	if got := Version(); got != fallback {
 		t.Errorf("Version() with empty vars = %q, want %q", got, fallback)
+	}
+}
+
+func TestUnifiedPharmacyRowShape(t *testing.T) {
+	cs, _ := session(t)
+
+	allowedRowKeys := map[string]bool{
+		"pharmacy_id":    true,
+		"name":           true,
+		"address":        true,
+		"metro":          true,
+		"phones":         true,
+		"features":       true,
+		"open_status":    true,
+		"lat":            true,
+		"lng":            true,
+		"distance_km":    true,
+		"price_min":      true,
+		"price_max":      true,
+		"price_note":     true,
+		"kind":           true,
+		"network_id":     true,
+		"pharmacies":     true,
+		"feature_counts": true,
+	}
+
+	allowedCardExtras := map[string]bool{
+		"hours":            true,
+		"order_options":    true,
+		"order_conditions": true,
+		"directions":       true,
+		"price_list_date":  true,
+		"price_list_items": true,
+		"url":              true,
+	}
+
+	disallowedBools := []string{"online_order", "takes_orders", "open_now", "open_24h"}
+
+	checkDisallowedBools := func(source string, obj map[string]any) {
+		for _, b := range disallowedBools {
+			if _, has := obj[b]; has {
+				t.Errorf("%s: contains duplicate bool flag %q (must only be in features[]): %v", source, b, obj)
+			}
+		}
+	}
+
+	checkRowKeys := func(source string, row map[string]any) {
+		checkDisallowedBools(source, row)
+		for k := range row {
+			if !allowedRowKeys[k] {
+				t.Errorf("%s: row contains unexpected key %q (allowed row keys only): %v", source, k, row)
+			}
+			if allowedCardExtras[k] {
+				t.Errorf("%s: list row contains card-only field %q: %v", source, k, row)
+			}
+		}
+	}
+
+	checkCardKeys := func(source string, card map[string]any) {
+		checkDisallowedBools(source, card)
+		for k := range card {
+			if !allowedRowKeys[k] && !allowedCardExtras[k] {
+				t.Errorf("%s: card contains unexpected key %q: %v", source, k, card)
+			}
+		}
+	}
+
+	// 1. where_to_buy
+	wtb := mustCall(t, cs, "where_to_buy", map[string]any{"drug_id": 13270})
+	for i, r := range list(wtb, "rows") {
+		checkRowKeys(fmt.Sprintf("where_to_buy[%d]", i), obj(r))
+	}
+
+	// 2. shopping_list
+	sl := mustCall(t, cs, "shopping_list", map[string]any{"items": []any{map[string]any{"drug_id": 13270}}})
+	for i, r := range list(sl, "rows") {
+		checkRowKeys(fmt.Sprintf("shopping_list[%d]", i), obj(r))
+	}
+
+	// 3. find_pharmacies
+	fp := mustCall(t, cs, "find_pharmacies", map[string]any{"metro": []any{21}})
+	for i, r := range list(fp, "rows") {
+		checkRowKeys(fmt.Sprintf("find_pharmacies[%d]", i), obj(r))
+	}
+
+	// 4. nearest_pharmacies
+	near := mustCall(t, cs, "nearest_pharmacies", map[string]any{"lat": 55.8188, "lng": 37.4975, "drug_id": 13270, "limit": 2})
+	nearPh := list(near, "pharmacies")
+	if len(nearPh) == 0 {
+		t.Fatal("nearest_pharmacies returned no pharmacies")
+	}
+	for i, p := range nearPh {
+		checkRowKeys(fmt.Sprintf("nearest_pharmacies[%d]", i), obj(p))
+	}
+
+	// 5. pharmacy_card
+	card := mustCall(t, cs, "pharmacy_card", map[string]any{"pharmacy_id": 24084})
+	checkCardKeys("pharmacy_card", card)
+
+	// 6. price_at_pharmacy
+	pap := mustCall(t, cs, "price_at_pharmacy", map[string]any{"pharmacy_id": 27324, "brand_id": 7863, "form_id": 34})
+	checkCardKeys("price_at_pharmacy.pharmacy", obj(pap["pharmacy"]))
+}
+
+func TestPricePrecisionListVsPharmacy(t *testing.T) {
+	cs, _ := session(t)
+
+	// where_to_buy on saved fixture with Живика
+	wtb := mustCall(t, cs, "where_to_buy", map[string]any{"drug_id": 11562, "pack": 20, "metro": []any{21}})
+	rows := list(wtb, "rows")
+	if len(rows) == 0 {
+		t.Fatal("where_to_buy returned no rows")
+	}
+	var zhivika map[string]any
+	for _, r := range rows {
+		row := obj(r)
+		if row["pharmacy_id"] == float64(29199) {
+			zhivika = row
+			break
+		}
+	}
+	if zhivika == nil {
+		t.Fatalf("pharmacy 29199 (Живика) not found in where_to_buy rows: %v", rows)
+	}
+
+	// Site renders whole roubles in the list row: 195 ... 196
+	if zhivika["price_min"] != float64(195) || zhivika["price_max"] != float64(196) {
+		t.Errorf("Живика list prices = %v..%v, want 195..196", zhivika["price_min"], zhivika["price_max"])
+	}
+
+	// common.price_note explains why list prices are whole roubles
+	common, ok := wtb["common"].(map[string]any)
+	if !ok || common == nil {
+		t.Fatalf("where_to_buy response missing common block: %v", wtb)
+	}
+	const wantNote = "list prices are whole roubles as shown by the site; price_at_pharmacy has exact prices"
+	if note, _ := common["price_note"].(string); note != wantNote {
+		t.Errorf("common.price_note = %q, want %q", note, wantNote)
+	}
+
+	// price_at_pharmacy for the same pharmacy has exact kopeck prices: [195, 195.8]
+	pap := mustCall(t, cs, "price_at_pharmacy", map[string]any{"pharmacy_id": 29199, "drug_id": 11562})
+	items := list(pap, "items")
+	if len(items) == 0 {
+		t.Fatal("price_at_pharmacy returned no items")
+	}
+	first := obj(items[0])
+	prices, ok := first["prices"].([]any)
+	if !ok || len(prices) != 2 || prices[0].(float64) != 195 || prices[1].(float64) != 195.8 {
+		t.Errorf("price_at_pharmacy prices = %v, want [195, 195.8]", first["prices"])
 	}
 }
