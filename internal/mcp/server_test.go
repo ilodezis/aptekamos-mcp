@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -327,5 +329,62 @@ func TestBrowseDescriptionExplainsGroups(t *testing.T) {
 				t.Errorf("price_at_pharmacy description: %s", tool.Description)
 			}
 		}
+	}
+}
+
+func TestServerInfoVersion(t *testing.T) {
+	cs, _ := session(t)
+	ir := cs.InitializeResult()
+	if ir == nil || ir.ServerInfo == nil {
+		t.Fatal("expected non-nil InitializeResult and ServerInfo")
+	}
+
+	info := ir.ServerInfo
+	if info.Name != "aptekamos" {
+		t.Errorf("serverInfo.name = %q, want %q", info.Name, "aptekamos")
+	}
+
+	got := info.Version
+	if got == "0.1.0" {
+		t.Error("serverInfo.version must not be 0.1.0")
+	}
+
+	goVer := runtime.Version()
+	if !strings.Contains(got, goVer) {
+		t.Errorf("serverInfo.version %q does not contain Go runtime version %q", got, goVer)
+	}
+
+	// Without ldflags, fallbacks "dev" and "unknown" must be used.
+	if !strings.Contains(got, "commit dev") {
+		t.Errorf("serverInfo.version %q does not contain fallback commit", got)
+	}
+	if !strings.Contains(got, "built unknown") {
+		t.Errorf("serverInfo.version %q does not contain fallback build date", got)
+	}
+
+	want := fmt.Sprintf("%s (Go %s, commit dev, built unknown)", BaseVersion, goVer)
+	if got != want {
+		t.Errorf("serverInfo.version = %q, want %q", got, want)
+	}
+}
+
+func TestVersionFormatting(t *testing.T) {
+	origCommit, origDate := gitCommit, buildDate
+	defer func() {
+		gitCommit, buildDate = origCommit, origDate
+	}()
+
+	gitCommit = "abc1234"
+	buildDate = "2026-10-29"
+	want := fmt.Sprintf("1.0.0 (Go %s, commit abc1234, built 2026-10-29)", runtime.Version())
+	if got := Version(); got != want {
+		t.Errorf("Version() = %q, want %q", got, want)
+	}
+
+	gitCommit = ""
+	buildDate = ""
+	fallback := fmt.Sprintf("1.0.0 (Go %s, commit dev, built unknown)", runtime.Version())
+	if got := Version(); got != fallback {
+		t.Errorf("Version() with empty vars = %q, want %q", got, fallback)
 	}
 }

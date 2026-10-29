@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -13,15 +14,36 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const ServerInstructions = "AptekaMos (aptekamos.ru) is a Russian drug-availability service: prices and stock of " +
-	"thousands of pharmacies in Moscow and 64 other regions (Moscow is the default; pass region for others). " +
-	"Ids: drug_id is one exact product (brand + form + dosage); brand_id + form_id is a brand in one form " +
-	"across all its dosages; pharmacy_id, network_id and the filter ids come from the tools' answers and from " +
-	"reference. Typical flow: search_drugs -> drug_card (dosages, packs, makers) -> where_to_buy or " +
-	"nearest_pharmacies -> price_at_pharmacy / pharmacy_card. substitutes and browse find other brands of the " +
-	"same substance; shopping_list finds pharmacies that have a whole list. Prices are in roubles and come " +
-	"from the pharmacies' own price lists, so they can be hours old. The leaflet text is the site's reference, " +
-	"not medical advice: do not pick prescription drugs or doses for anyone."
+const (
+	BaseVersion        = "1.0.0"
+	ServerInstructions = "AptekaMos (aptekamos.ru) is a Russian drug-availability service: prices and stock of " +
+		"thousands of pharmacies in Moscow and 64 other regions (Moscow is the default; pass region for others). " +
+		"Ids: drug_id is one exact product (brand + form + dosage); brand_id + form_id is a brand in one form " +
+		"across all its dosages; pharmacy_id, network_id and the filter ids come from the tools' answers and from " +
+		"reference. Typical flow: search_drugs -> drug_card (dosages, packs, makers) -> where_to_buy or " +
+		"nearest_pharmacies -> price_at_pharmacy / pharmacy_card. substitutes and browse find other brands of the " +
+		"same substance; shopping_list finds pharmacies that have a whole list. Prices are in roubles and come " +
+		"from the pharmacies' own price lists, so they can be hours old. The leaflet text is the site's reference, " +
+		"not medical advice: do not pick prescription drugs or doses for anyone."
+)
+
+var (
+	gitCommit = "dev"
+	buildDate = "unknown"
+)
+
+// Version returns the full runtime version string reported in serverInfo.
+func Version() string {
+	commit := gitCommit
+	if commit == "" {
+		commit = "dev"
+	}
+	date := buildDate
+	if date == "" {
+		date = "unknown"
+	}
+	return fmt.Sprintf("%s (Go %s, commit %s, built %s)", BaseVersion, runtime.Version(), commit, date)
+}
 
 type Server struct {
 	svc       *aptekamos.Service
@@ -31,7 +53,7 @@ type Server struct {
 func NewServer(svc *aptekamos.Service) *Server {
 	s := &Server{
 		svc: svc,
-		mcpServer: mcp.NewServer(&mcp.Implementation{Name: "aptekamos", Version: "0.1.0"},
+		mcpServer: mcp.NewServer(&mcp.Implementation{Name: "aptekamos", Version: Version()},
 			&mcp.ServerOptions{Instructions: ServerInstructions}),
 	}
 	s.registerTools()

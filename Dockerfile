@@ -5,7 +5,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/aptekamos-mcp .
+ARG GIT_SHA=dev
+ARG BUILD_DATE=unknown
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X github.com/ilodezis/aptekamos-mcp/internal/mcp.gitCommit=${GIT_SHA} -X github.com/ilodezis/aptekamos-mcp/internal/mcp.buildDate=${BUILD_DATE}" \
+    -o /out/aptekamos-mcp .
 
 # Runtime: CA certificates and static binary
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99

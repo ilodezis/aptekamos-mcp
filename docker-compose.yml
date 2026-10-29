@@ -1,6 +1,10 @@
 services:
   aptekamos-mcp:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: aptekamos-mcp
     env_file: .env
     ports:
