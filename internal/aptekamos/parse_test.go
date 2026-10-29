@@ -315,7 +315,7 @@ func TestParsePharmacy(t *testing.T) {
 	if p.OpenStatus != "Откроется в ср. в 09:00" || p.OpenNow == nil || *p.OpenNow {
 		t.Errorf("open = %q %v", p.OpenStatus, p.OpenNow)
 	}
-	if p.PriceListDate != "27.10.2026 20:00" || p.PriceListItems != 2080 {
+	if p.PriceListDate != "2026-10-27T20:00:00+03:00" || p.PriceListItems != 2080 {
 		t.Errorf("price list = %q %d", p.PriceListDate, p.PriceListItems)
 	}
 	if !slices.Equal(p.Hours, []string{"ежедневно с 09:00 до 22:00"}) || !slices.Equal(p.Phones, []string{"+7(495)609-11-29"}) {
@@ -349,7 +349,7 @@ func TestParseOffer(t *testing.T) {
 		t.Errorf("tradeform offer = %+v", items)
 	}
 	items = parseOfferItems(fixture(t, "offer_drug.html"))
-	if len(items) != 1 || items[0].Name != "Тардиферон таблетки 80мг №30 Пьер Фабр Медикамент Франция" || items[0].Price != 2250 || items[0].UnitPrice != 75 {
+	if len(items) != 1 || items[0].Name != "Тардиферон таблетки 80мг №30 Пьер Фабр Медикамент Франция" || items[0].Price != 2250 || items[0].UnitPrice != 75 || items[0].DrugID != 128863 || items[0].Pack != 30 {
 		t.Errorf("drug offer = %+v", items)
 	}
 	if p := parsePharmacy(fixture(t, "offer_drug.html")); p.ID != 27324 || p.Name != "Аптека Хамовники" {
@@ -362,7 +362,7 @@ func TestParsePriceList(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("items = %+v", items)
 	}
-	if items[0].Name != "Нурофен для детей суспензия апельсиновая 100мг/5мл 200мл №1 Рекитт Бенкизер Хелскэр Великобритания" || items[0].Price != 327 {
+	if items[0].Name != "Нурофен для детей суспензия апельсиновая 100мг/5мл 200мл №1 Рекитт Бенкизер Хелскэр Великобритания" || items[0].Price != 327 || items[0].DrugID != 112184 || items[0].Pack != 1 {
 		t.Errorf("first = %+v", items[0])
 	}
 	if items[2].Price != 144 {
@@ -380,7 +380,7 @@ func TestParseMap(t *testing.T) {
 	}
 	p := one[0]
 	if p.ID != 27324 || p.Lat != 55.725137 || p.Lng != 37.574207 || p.Name != "Аптека Хамовники" || p.Metro != "Фрунзенская, Спортивная" ||
-		p.OpenStatus != "Откроется в ср. в 09:00" || p.PriceListDate != "27.10.2026 20:00" || p.Open24h || p.OnlineOrder {
+		p.OpenStatus != "Откроется в ср. в 09:00" || p.PriceListDate != "2026-10-27T20:00:00+03:00" || p.Open24h || p.OnlineOrder {
 		t.Errorf("map pharmacy = %+v", p)
 	}
 	if !slices.Equal(p.Phones, []string{"+7(495)609-11-29"}) {
@@ -528,5 +528,45 @@ func TestGroupItemsKeepsDifferentProducts(t *testing.T) {
 	}
 	if out[1].Price != 9 || out[1].Prices != nil {
 		t.Errorf("other id = %+v", out[1])
+	}
+}
+
+func TestGroupItemsDeduplicatesIdenticalPrices(t *testing.T) {
+	in := []offerRow{
+		{PriceItem{Name: "Drug №10", Price: 120}, "id1"},
+		{PriceItem{Name: "Drug №10", Price: 120}, "id1"},
+	}
+	out := groupItems(in)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(out))
+	}
+	if out[0].Price != 120 {
+		t.Errorf("price = %v, want 120", out[0].Price)
+	}
+	if out[0].Prices != nil {
+		t.Errorf("expected Prices to be nil when identical, got %v", out[0].Prices)
+	}
+	if out[0].Pack != 10 || out[0].Units != 10 {
+		t.Errorf("pack/units = %d/%d, want 10", out[0].Pack, out[0].Units)
+	}
+}
+
+func TestFormatISODate(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"28.10.2026 13:46", "2026-10-28T13:46:00+03:00"},
+		{"27.10.2026 20:00:15", "2026-10-27T20:00:15+03:00"},
+		{"27.10.2026", "2026-10-27T00:00:00+03:00"},
+		{"2026-10-28T13:46:00+03:00", "2026-10-28T13:46:00+03:00"},
+		{"", ""},
+		{"invalid", "invalid"},
+	}
+	for _, tc := range cases {
+		got := formatISODate(tc.in)
+		if got != tc.want {
+			t.Errorf("formatISODate(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

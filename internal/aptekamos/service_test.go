@@ -191,8 +191,11 @@ func TestOfferAtPharmacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Pharmacy.ID != 27324 || len(o.Items) != 1 || o.Items[0].Price != 2250 {
+	if o.Pharmacy.ID != 27324 || len(o.Items) != 1 || o.Items[0].Price != 2250 || o.Items[0].DrugID != 128863 || o.Items[0].Pack != 30 {
 		t.Errorf("offer = %+v", o)
+	}
+	if o.Pharmacy.PriceListDate != "2026-10-27T20:00:00+03:00" {
+		t.Errorf("offer pharmacy price list date = %q", o.Pharmacy.PriceListDate)
 	}
 	reqs := site.Requests()
 	if len(reqs) != 2 || reqs[0] != "/tovary/lekarstva/x-1/x-13270/ceni" || reqs[1] != "/tovary/trd-x-8826/frm-x-34/med-x-13270/kupit/org-x-27324" {

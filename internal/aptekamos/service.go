@@ -96,6 +96,7 @@ type Target struct {
 	DrugID  int `json:"drug_id,omitempty"`
 	BrandID int `json:"brand_id,omitempty"`
 	FormID  int `json:"form_id,omitempty"`
+	Pack    int `json:"pack,omitempty"`
 }
 
 func (t Target) validate() error {
@@ -323,6 +324,14 @@ func (s *Service) cardPage(ctx context.Context, t Target, region Region, q url.V
 	if err := t.validate(); err != nil {
 		return nil, err
 	}
+	if t.Pack > 0 {
+		if q == nil {
+			q = url.Values{"p": {strconv.Itoa(t.Pack)}}
+		} else if q.Get("p") == "" {
+			q = q.Clone()
+			q.Set("p", strconv.Itoa(t.Pack))
+		}
+	}
 	p, err := s.fetch(ctx, withQuery(region.prefix()+t.pagePath(), q), ttlOffers)
 	return p, notFound(err, t.label())
 }
@@ -533,6 +542,13 @@ func (s *Service) OfferAt(ctx context.Context, pharmacyID int, t Target, region 
 	if o.Items == nil {
 		o.Items = []PriceItem{}
 	}
+	if t.DrugID > 0 {
+		for i := range o.Items {
+			if o.Items[i].DrugID == 0 {
+				o.Items[i].DrugID = t.DrugID
+			}
+		}
+	}
 	return o, nil
 }
 
@@ -685,6 +701,7 @@ func (s *Service) ShoppingList(ctx context.Context, items []Target, f Filters, r
 	if err != nil {
 		return Listing{}, err
 	}
+	q.Del("p")
 	q.Set("aid", "bsw")
 	q.Set("productids", strings.Join(keys, ","))
 	p, err := s.fetch(ctx, withQuery(r.prefix()+"/korzina", q), ttlOffers)

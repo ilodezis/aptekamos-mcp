@@ -142,9 +142,11 @@ type Pharmacy struct {
 
 // PriceItem is one line of a pharmacy's price list or offer: the exact pack and its price.
 // A pharmacy can hold the same pack at several prices (batches; the site does not say why):
-// those collapse into one item with the lowest price and all of them in Prices.
+// those collapse into one item with the lowest price and all distinct prices in Prices.
 // Units and UnitPrice are set when the name says "№N" with N above one.
 type PriceItem struct {
+	DrugID    int       `json:"drug_id,omitempty"`
+	Pack      int       `json:"pack,omitempty"`
 	Name      string    `json:"name"`
 	Price     float64   `json:"price"`
 	Prices    []float64 `json:"prices,omitempty"`

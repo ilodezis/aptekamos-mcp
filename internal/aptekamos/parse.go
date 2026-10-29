@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -303,7 +304,7 @@ func parsePharmacy(doc *goquery.Document) Pharmacy {
 		Address:        text(doc.Find("#am-pc-org-addr-txt")),
 		Metro:          text(doc.Find("#am-pc-org-metro-txt")),
 		Directions:     text(doc.Find("#am-pc-org-path-txt")),
-		PriceListDate:  text(doc.Find("#am-pc-org-pl-info-last-updated-val")),
+		PriceListDate:  formatISODate(text(doc.Find("#am-pc-org-pl-info-last-updated-val"))),
 		PriceListItems: parseCount(text(doc.Find("#am-pc-org-pl-info-count-val"))),
 	}
 	p.ID = segmentID(attrLink(doc.Find(".am-pc-org-fav").First(), "data-link"), "org")
@@ -358,6 +359,24 @@ func zipPrices(names, prices *goquery.Selection) []offerRow {
 	return out
 }
 
+var drugImgRe = regexp.MustCompile(`(?i)drug0*(\d+)(?:[-._]|$)`)
+
+func drugIDFromImg(s *goquery.Selection) int {
+	img := s.Find(".am-pc-org-product-img").First()
+	if img.Length() == 0 {
+		return 0
+	}
+	for _, attr := range []string{"data-src-origin", "src"} {
+		if val, ok := img.Attr(attr); ok {
+			if m := drugImgRe.FindStringSubmatch(val); len(m) > 1 {
+				id, _ := strconv.Atoi(m[1])
+				return id
+			}
+		}
+	}
+	return 0
+}
+
 // parseOfferItems reads the exact packs and prices of an offer page (/kupit/org-…), one item per pack.
 func parseOfferItems(doc *goquery.Document) []PriceItem {
 	var rows []offerRow
@@ -368,7 +387,8 @@ func parseOfferItems(doc *goquery.Document) []PriceItem {
 		}
 		price, _ := parsePriceRange(text(s.Find(".am-pc-org-product-price-val").First()))
 		id, _ := s.Attr("data-product-id")
-		rows = append(rows, offerRow{PriceItem{Name: name, Price: price}, id})
+		drugID := drugIDFromImg(s)
+		rows = append(rows, offerRow{PriceItem{Name: name, Price: price, DrugID: drugID}, id})
 	})
 	if len(rows) == 0 {
 		rows = zipPrices(doc.Find(".am-pc-org-product-name"), doc.Find(".am-pc-org-product-price-val"))
@@ -378,7 +398,21 @@ func parseOfferItems(doc *goquery.Document) []PriceItem {
 
 // parsePriceList reads a pharmacy's price list search (/price-list?q=…).
 func parsePriceList(doc *goquery.Document) []PriceItem {
-	return groupItems(zipPrices(doc.Find(".am-pc-org-pl-product-name"), doc.Find(".am-pc-org-pl-product-price")))
+	var rows []offerRow
+	doc.Find(".am-pc-org-pl-product").Each(func(_ int, s *goquery.Selection) {
+		name := text(s.Find(".am-pc-org-pl-product-name").First())
+		if name == "" {
+			return
+		}
+		price, _ := parsePriceRange(text(s.Find(".am-pc-org-pl-product-price").First()))
+		id, _ := s.Attr("data-product-id")
+		drugID := drugIDFromImg(s)
+		rows = append(rows, offerRow{PriceItem{Name: name, Price: price, DrugID: drugID}, id})
+	})
+	if len(rows) == 0 {
+		rows = zipPrices(doc.Find(".am-pc-org-pl-product-name"), doc.Find(".am-pc-org-pl-product-price"))
+	}
+	return groupItems(rows)
 }
 
 type mapOrg struct {
@@ -412,7 +446,7 @@ func parseMapPharmacies(doc *goquery.Document) ([]MapPharmacy, error) {
 		p := MapPharmacy{
 			ID: o.ID, Name: cleanText(o.Name), Address: cleanText(o.Address), Metro: cleanText(o.Metro),
 			Directions: cleanText(o.Path), Phones: splitPhones(o.Phones), Lat: o.Lat, Lng: o.Lng,
-			Open24h: o.FullDay == 1, OpenStatus: cleanText(o.OpenTime), PriceListDate: o.SendDate, OnlineOrder: o.HasOrder == 1,
+			Open24h: o.FullDay == 1, OpenStatus: cleanText(o.OpenTime), PriceListDate: formatISODate(o.SendDate), OnlineOrder: o.HasOrder == 1,
 		}
 		p.PriceMin, _ = parsePriceRange(o.MinPriceStr)
 		out = append(out, p)
@@ -484,12 +518,13 @@ type offerRow struct {
 }
 
 // groupItems collapses rows that are the same item (same name and product key) into one: the
-// lowest price, and every price ascending when there is more than one. Order of first appearance is kept.
+// lowest price, and every distinct price ascending when there is more than one. Order of first appearance is kept.
 func groupItems(rows []offerRow) []PriceItem {
 	type key struct{ id, name string }
 	var order []key
 	prices := map[key][]float64{}
 	names := map[key]string{}
+	drugIDs := map[key]int{}
 	for _, r := range rows {
 		k := key{r.ID, r.Name}
 		if _, ok := prices[k]; !ok {
@@ -497,17 +532,24 @@ func groupItems(rows []offerRow) []PriceItem {
 			names[k] = r.Name
 		}
 		prices[k] = append(prices[k], r.Price)
+		if r.DrugID > 0 {
+			drugIDs[k] = r.DrugID
+		}
 	}
 	var out []PriceItem
 	for _, k := range order {
 		ps := prices[k]
 		slices.Sort(ps)
-		it := PriceItem{Name: names[k], Price: ps[0]}
+		ps = slices.Compact(ps)
+		it := PriceItem{Name: names[k], Price: ps[0], DrugID: drugIDs[k]}
 		if len(ps) > 1 {
 			it.Prices = ps
 		}
-		if n := unitsFromName(it.Name); n > 1 {
-			it.Units, it.UnitPrice = n, unitPrice(it.Price, n)
+		if n := unitsFromName(it.Name); n > 0 {
+			it.Pack = n
+			if n > 1 {
+				it.Units, it.UnitPrice = n, unitPrice(it.Price, n)
+			}
 		}
 		out = append(out, it)
 	}

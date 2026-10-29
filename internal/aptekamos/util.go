@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const siteHost = "https://aptekamos.ru"
@@ -167,4 +168,23 @@ func unitPrice(price float64, units int) float64 {
 		return 0
 	}
 	return math.Round(price/float64(units)*100) / 100
+}
+
+var mskLocation = time.FixedZone("MSK", 3*3600)
+
+// formatISODate parses dates like "28.10.2026 13:46" or "28.10.2026" as MSK (UTC+3) and returns RFC3339.
+func formatISODate(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	for _, layout := range []string{"02.01.2006 15:04:05", "02.01.2006 15:04", "02.01.2006"} {
+		if t, err := time.ParseInLocation(layout, s, mskLocation); err == nil {
+			return t.Format(time.RFC3339)
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, s); err == nil {
+		return s
+	}
+	return s
 }

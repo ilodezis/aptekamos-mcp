@@ -214,7 +214,7 @@ func TestNearestAndPharmacyTools(t *testing.T) {
 func TestShoppingListAndReference(t *testing.T) {
 	cs, site := session(t)
 	out := mustCall(t, cs, "shopping_list", map[string]any{
-		"items": []any{map[string]any{"drug_id": 13270}, map[string]any{"brand_id": 7863, "form_id": 34}}, "limit": 4,
+		"items": []any{map[string]any{"drug_id": 13270, "pack": 30}, map[string]any{"brand_id": 7863, "form_id": 34}}, "limit": 4,
 	})
 	if out["pharmacies"].(float64) != 4604 || len(list(out, "rows")) != 4 {
 		t.Errorf("shopping list = %v", out)

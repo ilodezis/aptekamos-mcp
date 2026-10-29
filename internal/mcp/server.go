@@ -146,6 +146,17 @@ func (p productArgs) target() aptekamos.Target {
 	return aptekamos.Target{DrugID: p.DrugID, BrandID: p.BrandID, FormID: p.FormID}
 }
 
+type listItemArgs struct {
+	DrugID  int `json:"drug_id"`
+	BrandID int `json:"brand_id"`
+	FormID  int `json:"form_id"`
+	Pack    int `json:"pack"`
+}
+
+func (p listItemArgs) target() aptekamos.Target {
+	return aptekamos.Target{DrugID: p.DrugID, BrandID: p.BrandID, FormID: p.FormID, Pack: p.Pack}
+}
+
 func (p productArgs) given() bool { return p.DrugID != 0 || p.BrandID != 0 || p.FormID != 0 }
 
 type filterArgs struct {
@@ -469,18 +480,19 @@ func (s *Server) registerTools() {
 			return s.pageProducts(ctx, l, err, a.pageArgs, a.Region, a.AvailableOnly, "")
 		})
 
+	listItemProps := merge(productProps, props{"pack": intProp("Pack size id from drug_card packs (e.g. 20 for №20).", 1)})
 	addTool(s, &mcp.Tool{
 		Name: "shopping_list",
 		Description: "Pharmacies that have every product of a list, with the price of the whole list there " +
-			"and a summary (how many pharmacies, total price range). Each item is a drug_id or brand_id + form_id. " + rowsNote,
+			"and a summary (how many pharmacies, total price range). Each item is a drug_id or brand_id + form_id, optionally with pack. " + rowsNote,
 	}, object(merge(props{"items": map[string]any{"type": "array", "minItems": 1, "maxItems": 10,
-		"description": "Products of the list.", "items": map[string]any{"type": "object", "properties": productProps, "additionalProperties": false}}},
+		"description": "Products of the list.", "items": map[string]any{"type": "object", "properties": listItemProps, "additionalProperties": false}}},
 		regionProps, offerFilterProps, sortProp, coordProps, pageProps(20, 100)), "items"),
 		func(ctx context.Context, a struct {
 			filterArgs
 			pageArgs
-			Items  []productArgs `json:"items"`
-			Region string        `json:"region"`
+			Items  []listItemArgs `json:"items"`
+			Region string         `json:"region"`
 		}) (any, error) {
 			targets := make([]aptekamos.Target, len(a.Items))
 			for i, it := range a.Items {
