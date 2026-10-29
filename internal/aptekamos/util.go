@@ -95,7 +95,7 @@ func parseNumber(s string) float64 {
 		return r
 	}, s)
 	f, _ := strconv.ParseFloat(s, 64)
-	return f
+	return math.Round(f*100) / 100
 }
 
 // parsePriceRange reads "627р", "286 ... 574р" or "1 045 ... 5 500" into a range.

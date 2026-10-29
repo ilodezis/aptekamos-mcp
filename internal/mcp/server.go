@@ -484,7 +484,23 @@ func (s *Server) registerTools() {
 			AvailableOnly bool   `json:"available_only"`
 		}) (any, error) {
 			l, err := s.svc.Substitutes(ctx, a.target(), a.Region)
-			return s.pageProducts(ctx, l, err, a.pageArgs, a.Region, a.AvailableOnly, "")
+			if err != nil {
+				return nil, err
+			}
+			groupID := 0
+			if a.DrugID > 0 {
+				if ins, err := s.svc.Instruction(ctx, a.DrugID); err == nil && ins.GroupID > 0 {
+					groupID = ins.GroupID
+				}
+			}
+			if groupID > 0 {
+				for i := range l.Products {
+					if l.Products[i].GroupID == 0 {
+						l.Products[i].GroupID = groupID
+					}
+				}
+			}
+			return s.pageProducts(ctx, l, nil, a.pageArgs, a.Region, a.AvailableOnly, "")
 		})
 
 	addTool(s, &mcp.Tool{
@@ -610,8 +626,16 @@ func (s *Server) reference(ctx context.Context, kind, region, query string) (any
 // spelled in Cyrillic. The hint says what happened when the answer is empty or was reached that way.
 func (s *Server) search(ctx context.Context, query, region string) (aptekamos.ProductList, string, error) {
 	l, err := s.svc.Search(ctx, query, region)
-	if err != nil || len(l.Products) > 0 {
+	if err != nil {
 		return l, "", err
+	}
+	if len(l.Products) > 0 {
+		var hint string
+		if aptekamos.IsLatinOnly(query) {
+			spelled := aptekamos.Transliterate(strings.TrimSpace(query))
+			hint = searchedAsTranslit(strings.TrimSpace(query), spelled)
+		}
+		return l, hint, nil
 	}
 	if aptekamos.IsLatinOnly(query) {
 		spelled := aptekamos.Transliterate(strings.TrimSpace(query))

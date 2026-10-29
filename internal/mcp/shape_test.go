@@ -92,8 +92,13 @@ func TestBrowseAndSubstitutesShareTheRowShape(t *testing.T) {
 		if name == "browse" && common["inn_id"] != float64(17562) {
 			t.Errorf("browse common inn_id = %v, want 17562", common["inn_id"])
 		}
-		if name == "substitutes" && common["inn_id"] != float64(326) {
-			t.Errorf("substitutes common = %v, want inn_id 326", common)
+		if name == "substitutes" {
+			if common["inn_id"] != float64(326) {
+				t.Errorf("substitutes common = %v, want inn_id 326", common)
+			}
+			if common["group_id"] != float64(308) {
+				t.Errorf("substitutes common = %v, want group_id 308", common)
+			}
 		}
 		for _, p := range list(out, "products") {
 			row := obj(p)
@@ -226,6 +231,11 @@ func TestLatinSearchIsTransliterated(t *testing.T) {
 	}
 	if h, _ := none["hint"].(string); !strings.Contains(h, "Cyrillic") {
 		t.Errorf("hint = %q", h)
+	}
+
+	nuro := mustCall(t, cs, "search_drugs", map[string]any{"query": "nurofen"})
+	if h, _ := nuro["hint"].(string); !strings.Contains(h, "нурофен") {
+		t.Errorf("nurofen hint = %q, want Cyrillic suggestion", h)
 	}
 }
 

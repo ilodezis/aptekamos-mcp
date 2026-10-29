@@ -302,12 +302,13 @@ func parseInstruction(doc *goquery.Document) Instruction {
 // parsePharmacy reads a pharmacy card; offer pages (/kupit/org-…) carry the same header.
 func parsePharmacy(doc *goquery.Document) Pharmacy {
 	p := Pharmacy{
-		Name:           text(doc.Find("#am-pc-org-name")),
-		Address:        text(doc.Find("#am-pc-org-addr-txt")),
-		Metro:          text(doc.Find("#am-pc-org-metro-txt")),
-		Directions:     text(doc.Find("#am-pc-org-path-txt")),
-		PriceListDate:  formatISODate(text(doc.Find("#am-pc-org-pl-info-last-updated-val"))),
-		PriceListItems: parseCount(text(doc.Find("#am-pc-org-pl-info-count-val"))),
+		Name:            text(doc.Find("#am-pc-org-name")),
+		Address:         text(doc.Find("#am-pc-org-addr-txt")),
+		Metro:           text(doc.Find("#am-pc-org-metro-txt")),
+		Directions:      text(doc.Find("#am-pc-org-path-txt")),
+		PriceListDate:   formatISODate(text(doc.Find("#am-pc-org-pl-info-last-updated-val"))),
+		PriceListItems:  parseCount(text(doc.Find("#am-pc-org-pl-info-count-val"))),
+		OrderConditions: parseOrderConditions(doc),
 	}
 	p.ID = segmentID(attrLink(doc.Find(".am-pc-org-fav").First(), "data-link"), "org")
 	if p.ID == 0 {
@@ -422,6 +423,25 @@ func parseOfferItems(doc *goquery.Document) []PriceItem {
 	return groupItems(rows)
 }
 
+// dedupePriceItems removes duplicate rows that share the same product name, drug_id, and price.
+func dedupePriceItems(items []PriceItem) []PriceItem {
+	type key struct {
+		drugID int
+		name   string
+		price  float64
+	}
+	seen := make(map[key]bool, len(items))
+	out := make([]PriceItem, 0, len(items))
+	for _, it := range items {
+		k := key{drugID: it.DrugID, name: it.Name, price: it.Price}
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 // parsePriceList reads a pharmacy's price list search (/price-list?q=…).
 func parsePriceList(doc *goquery.Document) []PriceItem {
 	var rows []offerRow
@@ -438,7 +458,7 @@ func parsePriceList(doc *goquery.Document) []PriceItem {
 	if len(rows) == 0 {
 		rows = zipPrices(doc.Find(".am-pc-org-pl-product-name"), doc.Find(".am-pc-org-pl-product-price"))
 	}
-	return groupItems(rows)
+	return dedupePriceItems(groupItems(rows))
 }
 
 type mapOrg struct {

@@ -370,6 +370,19 @@ func TestParsePriceList(t *testing.T) {
 	}
 }
 
+func TestParsePriceListDedupesIdenticalRows(t *testing.T) {
+	items := parsePriceList(fixture(t, "price_list_dupes.html"))
+	if len(items) != 2 {
+		t.Fatalf("expected 2 unique items after deduping duplicate rows, got %d: %+v", len(items), items)
+	}
+	if items[0].Price != 327 || items[0].Prices != nil {
+		t.Errorf("first = %+v", items[0])
+	}
+	if items[1].Price != 144 {
+		t.Errorf("second = %+v", items[1])
+	}
+}
+
 func TestParseMap(t *testing.T) {
 	one, err := parseMapPharmacies(fixture(t, "map_one.html"))
 	if err != nil {
