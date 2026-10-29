@@ -233,9 +233,13 @@ func TestLatinSearchIsTransliterated(t *testing.T) {
 		t.Errorf("hint = %q", h)
 	}
 
+	// the real site matches "nurofen" as typed: the hint must say so, not claim a retry
 	nuro := mustCall(t, cs, "search_drugs", map[string]any{"query": "nurofen"})
-	if h, _ := nuro["hint"].(string); !strings.Contains(h, "нурофен") {
-		t.Errorf("nurofen hint = %q, want Cyrillic suggestion", h)
+	if len(list(nuro, "products")) == 0 {
+		t.Fatalf("nurofen: no results: %v", nuro)
+	}
+	if h, _ := nuro["hint"].(string); !strings.Contains(h, "Latin") || strings.Contains(h, "Nothing matched") {
+		t.Errorf("nurofen hint = %q, want the Latin-matched-by-site hint", h)
 	}
 }
 

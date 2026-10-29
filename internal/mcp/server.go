@@ -632,8 +632,7 @@ func (s *Server) search(ctx context.Context, query, region string) (aptekamos.Pr
 	if len(l.Products) > 0 {
 		var hint string
 		if aptekamos.IsLatinOnly(query) {
-			spelled := aptekamos.Transliterate(strings.TrimSpace(query))
-			hint = searchedAsTranslit(strings.TrimSpace(query), spelled)
+			hint = hintLatinMatched
 		}
 		return l, hint, nil
 	}

@@ -239,6 +239,11 @@ const hintCyrillic = "Nothing found. Write the product name in Russian (Cyrillic
 
 const hintNotFound = "Nothing found. Check the spelling, or search by the active substance or another trade name."
 
+// hintLatinMatched: the site matched a Latin spelling to Cyrillic names on its own, so the results
+// are its guess at what was meant.
+const hintLatinMatched = "The query is in Latin letters; the site matched it to Cyrillic product names itself. " +
+	"Write the product name in Russian to search exactly."
+
 func searchedAsTranslit(typed, spelled string) string {
 	return fmt.Sprintf("Nothing matched %q as typed, so these results are for the Cyrillic spelling %q. "+
 		"Write the product name in Russian to search exactly.", typed, spelled)

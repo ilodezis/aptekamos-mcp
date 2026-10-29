@@ -112,8 +112,9 @@ func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
 }
 
-// searchFixture picks the search page for a query. Like the real site it finds nothing for a name
-// typed in Latin letters only, and knows the tirzepatide brands.
+// searchFixture picks the search page for a query. Like the real site it matches a well-known
+// brand typed in Latin ("nurofen") by itself, finds nothing for other Latin-only names, and knows
+// the tirzepatide brands.
 func searchFixture(q, def string) string {
 	q = strings.ToLower(q)
 	switch {
@@ -121,6 +122,8 @@ func searchFixture(q, def string) string {
 		return "search_empty.html"
 	case strings.Contains(q, "тирзепатид") || strings.Contains(q, "седжаро"):
 		return "search_tirz.html"
+	case strings.Contains(q, "nurofen"):
+		return def
 	case strings.IndexFunc(q, func(r rune) bool { return r >= 'a' && r <= 'z' }) >= 0 &&
 		strings.IndexFunc(q, func(r rune) bool { return r >= 'а' && r <= 'я' }) < 0:
 		return "search_empty.html"
