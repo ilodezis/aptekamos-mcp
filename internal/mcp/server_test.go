@@ -160,6 +160,13 @@ func TestWhereToBuyPagingAndFilters(t *testing.T) {
 	if out["product"].(map[string]any)["name"] != "Мексидол таблетки" {
 		t.Errorf("product = %v", out["product"])
 	}
+	phRow := obj(rows[4])
+	if phRow["pharmacy_id"] != float64(27646) {
+		t.Fatalf("row 4 pharmacy_id = %v, want 27646", phRow["pharmacy_id"])
+	}
+	if phRow["lat"] == nil || phRow["lat"].(float64) == 0 || phRow["lng"] == nil || phRow["lng"].(float64) == 0 || phRow["open_status"] != "Откроется в ср. в 08:00" {
+		t.Errorf("row 4 coordinates or open_status = %v", phRow)
+	}
 	_, q := site.Last(t)
 	if q.Get("me") != "124,32" || q.Get("duty") != "1" || q.Get("so") != "1" {
 		t.Errorf("query = %v", q)
@@ -520,6 +527,9 @@ func TestPricePrecisionListVsPharmacy(t *testing.T) {
 	// Site renders whole roubles in the list row: 195 ... 196
 	if zhivika["price_min"] != float64(195) || zhivika["price_max"] != float64(196) {
 		t.Errorf("Живика list prices = %v..%v, want 195..196", zhivika["price_min"], zhivika["price_max"])
+	}
+	if zhivika["lat"] == nil || zhivika["lat"].(float64) == 0 || zhivika["lng"] == nil || zhivika["lng"].(float64) == 0 || zhivika["open_status"] != "Откроется в ср. в 08:00" {
+		t.Errorf("Живика coordinates or open_status = %v", zhivika)
 	}
 
 	// common.price_note explains why list prices are whole roubles

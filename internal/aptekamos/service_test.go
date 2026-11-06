@@ -133,8 +133,15 @@ func TestCardAndOffers(t *testing.T) {
 		t.Errorf("listing = total %d rows %d card %+v", l.Total, len(l.Rows), l.Card)
 	}
 	path, q := site.Last(t)
-	if path != "/tovary/trd-x-7863/frm-x-34/kupit" || q.Get("me") != "124" || q.Get("duty") != "1" || q.Get("so") != "1" {
+	if path != "/tovary/trd-x-7863/frm-x-34/kupit/na-karte" || q.Get("me") != "124" || q.Get("duty") != "1" || q.Get("so") != "1" {
 		t.Errorf("request = %s %v", path, q)
+	}
+	reqs := site.Requests()
+	if len(reqs) < 2 || !strings.HasPrefix(reqs[len(reqs)-2], "/tovary/trd-x-7863/frm-x-34/kupit?") {
+		t.Errorf("table request = %v", reqs)
+	}
+	if ph := l.Rows[14]; ph.PharmacyID != 27646 || ph.Lat == 0 || ph.Lng == 0 || ph.OpenStatus == "" {
+		t.Errorf("row 14 map enrichment missing: %+v", ph)
 	}
 	if !strings.HasPrefix(l.URL, "https://aptekamos.ru/tovary/trd-x-7863/frm-x-34/kupit?") {
 		t.Errorf("url = %s", l.URL)

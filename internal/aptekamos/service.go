@@ -415,6 +415,41 @@ func (s *Service) Offers(ctx context.Context, t Target, f Filters, region string
 	if f.Pack == 0 {
 		l.PriceNote = mixedPacksNote(c)
 	}
+	mapQ := q
+	if t.Pack > 0 && mapQ.Get("p") == "" {
+		mapQ = mapQ.Clone()
+		mapQ.Set("p", strconv.Itoa(t.Pack))
+	}
+	if mp, err := s.fetch(ctx, withQuery(r.prefix()+t.mapPath(), mapQ), ttlOffers); err == nil {
+		if md, err := mp.Doc(); err == nil {
+			if pins, err := parseMapPharmacies(md); err == nil && len(pins) > 0 {
+				byID := make(map[int]MapPharmacy, len(pins))
+				for _, pin := range pins {
+					id := pin.PharmacyID
+					if id == 0 {
+						id = pin.ID
+					}
+					if id > 0 {
+						byID[id] = pin
+					}
+				}
+				for i := range l.Rows {
+					row := &l.Rows[i]
+					id := row.PharmacyID
+					if id == 0 {
+						id = row.ID
+					}
+					if id > 0 {
+						if pin, ok := byID[id]; ok {
+							row.Lat = pin.Lat
+							row.Lng = pin.Lng
+							row.OpenStatus = pin.OpenStatus
+						}
+					}
+				}
+			}
+		}
+	}
 	return l, nil
 }
 
