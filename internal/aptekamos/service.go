@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"sort"
@@ -14,13 +15,14 @@ import (
 
 // How long pages stay cached. Prices and stock move during the day, leaflets and dictionaries do not.
 const (
-	ttlOffers     = 10 * time.Minute
-	ttlProducts   = 30 * time.Minute
-	ttlPharmacy   = time.Hour
-	ttlReference  = 24 * time.Hour
-	ttlLeaflet    = 24 * time.Hour
-	ttlAllMap     = 6 * time.Hour
-	maxListLength = 20
+	ttlOffers            = 10 * time.Minute
+	ttlProducts          = 30 * time.Minute
+	ttlPharmacy          = time.Hour
+	ttlReference         = 24 * time.Hour
+	ttlLeaflet           = 24 * time.Hour
+	ttlAllMap            = 6 * time.Hour
+	maxListLength        = 20
+	maxPartialPharmacies = 200
 )
 
 // Region is one of the site's regions; Slug is its path prefix (empty for Moscow).
@@ -764,6 +766,20 @@ func withoutSource(items []Product, t Target, c Card) []Product {
 
 // ShoppingList finds pharmacies that have every product of a list, with the total price there.
 func (s *Service) ShoppingList(ctx context.Context, items []Target, f Filters, region string) (Listing, error) {
+	return s.ShoppingListPartial(ctx, items, f, region, false)
+}
+
+type listItemDesc struct {
+	target     Target
+	label      string
+	key        string
+	pharmacies int
+}
+
+// ShoppingListPartial finds pharmacies that have every product of a list, or—when allowPartial is
+// true and no pharmacy stocks the entire list—fetches per-item offers and ranks pharmacies by
+// matched_count descending.
+func (s *Service) ShoppingListPartial(ctx context.Context, items []Target, f Filters, region string, allowPartial bool) (Listing, error) {
 	if len(items) == 0 {
 		return Listing{}, errors.New("the list is empty")
 	}
@@ -771,34 +787,240 @@ func (s *Service) ShoppingList(ctx context.Context, items []Target, f Filters, r
 	if err != nil {
 		return Listing{}, err
 	}
+	q, err := f.query()
+	if err != nil {
+		return Listing{}, err
+	}
+
+	descs := make([]listItemDesc, 0, len(items))
 	keys := make([]string, 0, len(items))
 	for _, t := range items {
 		c, err := s.Card(ctx, t, region)
 		if err != nil {
 			return Listing{}, fmt.Errorf("product %+v: %w", t, err)
 		}
-		if c.productKey == "" {
+		if !allowPartial && c.productKey == "" {
 			return Listing{}, fmt.Errorf("product %+v: AptekaMos offers no way to add it to a list", t)
 		}
-		keys = append(keys, c.productKey)
+		label := c.Name
+		if label == "" {
+			label = t.label()
+		}
+		if t.Pack > 0 && !strings.Contains(label, "№") {
+			label = fmt.Sprintf("%s №%d", label, t.Pack)
+		}
+		descs = append(descs, listItemDesc{
+			target:     t,
+			label:      label,
+			key:        c.productKey,
+			pharmacies: c.Pharmacies,
+		})
+		if c.productKey != "" {
+			keys = append(keys, c.productKey)
+		}
 	}
-	q, err := f.query()
+
+	basketURL := siteHost + r.prefix() + "/korzina"
+	if len(keys) == len(items) {
+		kq := q
+		kq.Del("p")
+		kq.Set("aid", "bsw")
+		kq.Set("productids", strings.Join(keys, ","))
+		p, err := s.fetch(ctx, withQuery(r.prefix()+"/korzina", kq), ttlOffers)
+		if err != nil {
+			return Listing{}, err
+		}
+		doc, err := p.Doc()
+		if err != nil {
+			return Listing{}, err
+		}
+		sum := parseBasketSummary(doc)
+		rows := parseRows(doc)
+		basketURL = pageURL(p)
+		if len(rows) > 0 || !allowPartial {
+			return Listing{Summary: &sum, Total: sum.Pharmacies, Rows: rows, URL: basketURL}, nil
+		}
+	}
+
+	return s.shoppingListPartial(ctx, descs, f, r, basketURL)
+}
+
+func (s *Service) shoppingListPartial(ctx context.Context, items []listItemDesc, f Filters, r Region, basketURL string) (Listing, error) {
+	fNoSort := f
+	fNoSort.Sort = ""
+	baseQ, err := fNoSort.query()
 	if err != nil {
 		return Listing{}, err
 	}
-	q.Del("p")
-	q.Set("aid", "bsw")
-	q.Set("productids", strings.Join(keys, ","))
-	p, err := s.fetch(ctx, withQuery(r.prefix()+"/korzina", q), ttlOffers)
-	if err != nil {
-		return Listing{}, err
+
+	type partialPharmacy struct {
+		row     Row
+		matched []bool
+		prices  []float64
 	}
-	doc, err := p.Doc()
-	if err != nil {
-		return Listing{}, err
+	byID := make(map[int]*partialPharmacy)
+
+	for idx, it := range items {
+		if it.pharmacies == 0 && it.key == "" {
+			continue
+		}
+		itemQ := baseQ.Clone()
+		itemQ.Set("pm", "modal")
+		if it.target.Pack > 0 {
+			itemQ.Set("p", strconv.Itoa(it.target.Pack))
+		}
+		p, err := s.fetch(ctx, withQuery(r.prefix()+it.target.mapPath(), itemQ), ttlOffers)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return Listing{}, err
+		}
+		doc, err := p.Doc()
+		if err != nil {
+			return Listing{}, err
+		}
+		pins, err := parseMapPharmacies(doc)
+		if err != nil {
+			return Listing{}, err
+		}
+
+		// Deduplicate per-pharmacy entries within one item, keeping lowest positive price.
+		itemPins := make(map[int]MapPharmacy, len(pins))
+		for _, pin := range pins {
+			id := pin.PharmacyID
+			if id == 0 {
+				id = pin.ID
+			}
+			if id <= 0 {
+				continue
+			}
+			prev, seen := itemPins[id]
+			if !seen || (pin.PriceMin > 0 && (prev.PriceMin == 0 || pin.PriceMin < prev.PriceMin)) {
+				itemPins[id] = pin
+			}
+		}
+
+		for id, pin := range itemPins {
+			entry, ok := byID[id]
+			if !ok {
+				row := Row{
+					Kind:       RowPharmacy,
+					PharmacyID: id,
+					Name:       pin.Name,
+					Address:    pin.Address,
+					Metro:      pin.Metro,
+					Phones:     pin.Phones,
+					Features:   append([]string(nil), pin.Features...),
+					OpenStatus: pin.OpenStatus,
+					Lat:        pin.Lat,
+					Lng:        pin.Lng,
+				}
+				entry = &partialPharmacy{
+					row:     row,
+					matched: make([]bool, len(items)),
+					prices:  make([]float64, len(items)),
+				}
+				byID[id] = entry
+			}
+			entry.matched[idx] = true
+			if pin.PriceMin > 0 {
+				entry.prices[idx] = pin.PriceMin
+			}
+		}
 	}
-	sum := parseBasketSummary(doc)
-	return Listing{Summary: &sum, Total: sum.Pharmacies, Rows: parseRows(doc), URL: pageURL(p)}, nil
+
+	ranked := make([]Row, 0, len(byID))
+	for _, entry := range byID {
+		row := entry.row
+		var matchedCount int
+		var missing []string
+		var totalPrice float64
+		for i, ok := range entry.matched {
+			if ok {
+				matchedCount++
+				totalPrice += entry.prices[i]
+			} else {
+				missing = append(missing, items[i].label)
+			}
+		}
+		if matchedCount == 0 {
+			continue
+		}
+		row.MatchedCount = matchedCount
+		row.RequestedCount = len(items)
+		row.MissingItems = missing
+		if totalPrice > 0 {
+			row.MatchedTotalPrice = math.Round(totalPrice*100) / 100
+		}
+		if (f.Lat != 0 || f.Lng != 0) && (row.Lat != 0 || row.Lng != 0) {
+			row.DistanceKm = float64(int(distanceKm(f.Lat, f.Lng, row.Lat, row.Lng)*100+0.5)) / 100
+		}
+		ranked = append(ranked, row)
+	}
+
+	comparePriceAsc := func(a, b float64) int {
+		switch {
+		case a > 0 && b > 0:
+			if a < b {
+				return -1
+			}
+			if a > b {
+				return 1
+			}
+			return 0
+		case a > 0:
+			return -1
+		case b > 0:
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		a, b := ranked[i], ranked[j]
+		if a.MatchedCount != b.MatchedCount {
+			return a.MatchedCount > b.MatchedCount
+		}
+		switch f.Sort {
+		case "near":
+			if a.DistanceKm != b.DistanceKm {
+				return a.DistanceKm < b.DistanceKm
+			}
+			if c := comparePriceAsc(a.MatchedTotalPrice, b.MatchedTotalPrice); c != 0 {
+				return c < 0
+			}
+		case "expensive":
+			if a.MatchedTotalPrice != b.MatchedTotalPrice {
+				return a.MatchedTotalPrice > b.MatchedTotalPrice
+			}
+		case "name":
+			if a.Name != b.Name {
+				return a.Name < b.Name
+			}
+		default:
+			if c := comparePriceAsc(a.MatchedTotalPrice, b.MatchedTotalPrice); c != 0 {
+				return c < 0
+			}
+		}
+		return a.PharmacyID < b.PharmacyID
+	})
+
+	totalMatched := len(ranked)
+	if len(ranked) > maxPartialPharmacies {
+		ranked = ranked[:maxPartialPharmacies]
+	}
+
+	sum := BasketSummary{Items: len(items), Partial: true}
+	note := "partial match: no pharmacy had every item; pharmacies are ranked by matched_count descending (up to 200), and matched_total_price sums the lowest price of each matched item"
+	return Listing{
+		Summary:   &sum,
+		Total:     totalMatched,
+		PriceNote: note,
+		Rows:      ranked,
+		URL:       basketURL,
+	}, nil
 }
 
 // Instruction reads a drug's leaflet.

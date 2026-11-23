@@ -4,8 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -21,13 +23,26 @@ const (
 	DefaultCallbackURI = "https://claude.ai/api/mcp/auth_callback"
 	DefaultTokenTTL    = 365 * 24 * 3600
 	DefaultCodeTTL     = 300
+
+	maxFailures = 5
+	lockWindow  = 10 * time.Minute
+	maxBody     = 64 << 10
 )
+
+// DefaultRedirectURIs are the callbacks claude.ai uses for custom connectors.
+var DefaultRedirectURIs = []string{
+	"https://claude.ai/api/mcp/auth_callback",
+	"https://claude.com/api/mcp/auth_callback",
+}
 
 type Config struct {
 	Password     string
 	TokenSecret  string
 	ClientID     string
 	ClientSecret string
+	// PublicURL is the externally visible origin (e.g. https://example.com). When set, metadata and
+	// WWW-Authenticate challenges use it instead of request headers.
+	PublicURL    string
 	RedirectURIs []string
 	TokenTTL     int64
 	CodeTTL      int64
@@ -44,6 +59,7 @@ type Server struct {
 	redirectURIs map[string]bool
 	mu           sync.Mutex
 	codes        map[string]codeEntry
+	fails        []time.Time
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -56,6 +72,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.ClientSecret == "" {
 		return nil, fmt.Errorf("CLIENT_SECRET is required")
 	}
+	if cfg.PublicURL != "" {
+		cfg.PublicURL = strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/")
+		if !strings.HasPrefix(cfg.PublicURL, "https://") {
+			return nil, fmt.Errorf("PUBLIC_URL must start with https://")
+		}
+	}
 	if cfg.ClientID == "" {
 		cfg.ClientID = DefaultClientID
 	}
@@ -67,14 +89,14 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	redirectMap := make(map[string]bool)
-	if len(cfg.RedirectURIs) == 0 {
-		redirectMap[DefaultCallbackURI] = true
-	} else {
-		for _, u := range cfg.RedirectURIs {
-			trimmed := strings.TrimSpace(u)
-			if trimmed != "" {
-				redirectMap[trimmed] = true
-			}
+	uris := cfg.RedirectURIs
+	if len(uris) == 0 {
+		uris = DefaultRedirectURIs
+	}
+	for _, u := range uris {
+		trimmed := strings.TrimSpace(u)
+		if trimmed != "" {
+			redirectMap[trimmed] = true
 		}
 	}
 
@@ -83,6 +105,15 @@ func NewServer(cfg Config) (*Server, error) {
 		redirectURIs: redirectMap,
 		codes:        make(map[string]codeEntry),
 	}, nil
+}
+
+// Register mounts the OAuth endpoints and RFC 8414 / RFC 9728 discovery documents.
+func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/.well-known/oauth-authorization-server", s.HandleMetadata)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", s.HandleProtectedResource)
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", s.HandleProtectedResource)
+	mux.HandleFunc("/oauth/authorize", s.HandleAuthorize)
+	mux.HandleFunc("/oauth/token", s.HandleToken)
 }
 
 // base64 urlsafe without padding
@@ -160,12 +191,12 @@ func (s *Server) BearerGate(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/mcp") {
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-				s.denyToken(w)
+				s.denyToken(w, r)
 				return
 			}
 			token := strings.TrimSpace(auth[7:])
 			if !s.TokenValid(token) {
-				s.denyToken(w)
+				s.denyToken(w, r)
 				return
 			}
 		}
@@ -173,14 +204,23 @@ func (s *Server) BearerGate(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) denyToken(w http.ResponseWriter) {
+// Challenge returns the WWW-Authenticate value for a 401 response on /mcp (RFC 9728).
+func (s *Server) Challenge(r *http.Request) string {
+	return fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"`, s.getBaseURL(r))
+}
+
+func (s *Server) denyToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("WWW-Authenticate", "Bearer")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("WWW-Authenticate", s.Challenge(r))
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
 }
 
 func (s *Server) getBaseURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return s.cfg.PublicURL
+	}
 	proto := r.Header.Get("X-Forwarded-Proto")
 	if proto == "" {
 		if r.TLS != nil {
@@ -196,9 +236,16 @@ func (s *Server) getBaseURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", proto, host)
 }
 
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func (s *Server) HandleMetadata(w http.ResponseWriter, r *http.Request) {
 	base := s.getBaseURL(r)
-	meta := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                base,
 		"authorization_endpoint":                base + "/oauth/authorize",
 		"token_endpoint":                        base + "/oauth/token",
@@ -206,9 +253,47 @@ func (s *Server) HandleMetadata(w http.ResponseWriter, r *http.Request) {
 		"grant_types_supported":                 []string{"authorization_code"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic"},
 		"code_challenge_methods_supported":      []string{"S256"},
+	})
+}
+
+// HandleProtectedResource serves the RFC 9728 protected resource metadata document.
+func (s *Server) HandleProtectedResource(w http.ResponseWriter, r *http.Request) {
+	base := s.getBaseURL(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resource":                 base + "/mcp",
+		"authorization_servers":    []string{base},
+		"bearer_methods_supported": []string{"header"},
+	})
+}
+
+func sameSecret(a, b string) bool {
+	ha, hb := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
+}
+
+// locked reports whether too many wrong passwords were typed within lockWindow, pruning older entries.
+func (s *Server) locked(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keep := s.fails[:0]
+	for _, t := range s.fails {
+		if now.Sub(t) < lockWindow {
+			keep = append(keep, t)
+		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(meta)
+	s.fails = keep
+	return len(s.fails) >= maxFailures
+}
+
+func (s *Server) recordFailure(now time.Time) {
+	s.mu.Lock()
+	s.fails = append(s.fails, now)
+	s.mu.Unlock()
+}
+
+func isMaxBytesErr(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
 }
 
 func (s *Server) requestError(p map[string]string) string {
@@ -230,20 +315,20 @@ func (s *Server) requestError(p map[string]string) string {
 var authFields = []string{"response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method"}
 
 func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
-	p := make(map[string]string)
-	if r.Method == http.MethodGet {
-		q := r.URL.Query()
-		for _, f := range authFields {
-			p[f] = q.Get(f)
-		}
-	} else if r.Method == http.MethodPost {
-		_ = r.ParseForm()
-		for _, f := range authFields {
-			p[f] = r.FormValue(f)
-		}
-	} else {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	if err := r.ParseForm(); isMaxBytesErr(err) {
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	p := make(map[string]string, len(authFields))
+	for _, f := range authFields {
+		p[f] = r.Form.Get(f)
 	}
 
 	if errStr := s.requestError(p); errStr != "" {
@@ -256,15 +341,21 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST - verify password
-	pwd := r.FormValue("password")
-	if !hmac.Equal([]byte(pwd), []byte(s.cfg.Password)) {
-		time.Sleep(1 * time.Second)
+	// POST - verify lockout and password
+	now := time.Now()
+	if s.locked(now) {
+		s.renderConsentPage(w, p, "Слишком много неверных паролей. Подождите несколько минут.", false, http.StatusTooManyRequests)
+		return
+	}
+
+	pwd := r.PostFormValue("password")
+	if !sameSecret(pwd, s.cfg.Password) {
+		s.recordFailure(now)
 		s.renderConsentPage(w, p, "Неверный пароль", false, http.StatusUnauthorized)
 		return
 	}
 
-	now := time.Now().Unix()
+	nowUnix := now.Unix()
 	codeBytes := make([]byte, 32)
 	_, _ = rand.Read(codeBytes)
 	code := b64Encode(codeBytes)
@@ -272,12 +363,12 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	// purge expired
 	for k, v := range s.codes {
-		if v.expiresAt <= now {
+		if v.expiresAt <= nowUnix {
 			delete(s.codes, k)
 		}
 	}
 	s.codes[code] = codeEntry{
-		expiresAt:     now + s.cfg.CodeTTL,
+		expiresAt:     nowUnix + s.cfg.CodeTTL,
 		redirectURI:   p["redirect_uri"],
 		codeChallenge: p["code_challenge"],
 	}
@@ -300,19 +391,27 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	bodyMap := make(map[string]string)
 	contentType := r.Header.Get("Content-Type")
 
 	if strings.Contains(contentType, "application/json") {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if isMaxBytesErr(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		var jm map[string]any
-		bodyBytes, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(bodyBytes, &jm); err == nil {
+		if json.Unmarshal(bodyBytes, &jm) == nil {
 			for k, v := range jm {
 				bodyMap[k] = fmt.Sprint(v)
 			}
 		}
 	} else {
-		_ = r.ParseForm()
+		if err := r.ParseForm(); isMaxBytesErr(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		for k := range r.PostForm {
 			bodyMap[k] = r.PostFormValue(k)
 		}
@@ -321,31 +420,20 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 	clientID := bodyMap["client_id"]
 	clientSecret := bodyMap["client_secret"]
 
-	auth := r.Header.Get("Authorization")
-	if clientSecret == "" && strings.HasPrefix(strings.ToLower(auth), "basic ") {
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[6:]))
-		if err == nil {
-			parts := strings.SplitN(string(raw), ":", 2)
-			if len(parts) == 2 {
-				if clientID == "" {
-					clientID = parts[0]
-				}
-				clientSecret = parts[1]
-			}
+	if u, p, ok := r.BasicAuth(); ok && clientSecret == "" {
+		if clientID == "" {
+			clientID = u
 		}
+		clientSecret = p
 	}
 
-	if clientID != s.cfg.ClientID || !hmac.Equal([]byte(clientSecret), []byte(s.cfg.ClientSecret)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+	if !sameSecret(clientID, s.cfg.ClientID) || !sameSecret(clientSecret, s.cfg.ClientSecret) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_client"})
 		return
 	}
 
 	if bodyMap["grant_type"] != "authorization_code" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unsupported_grant_type"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
 		return
 	}
 
@@ -357,29 +445,22 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	if !found || entry.expiresAt <= now || bodyMap["redirect_uri"] != entry.redirectURI {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
 
-	// Verify PKCE
+	// Verify PKCE (RFC 7636 requires code_verifier length in [43, 128]).
 	codeVerifier := bodyMap["code_verifier"]
 	sha := sha256.Sum256([]byte(codeVerifier))
 	challenge := b64Encode(sha[:])
 
-	if !hmac.Equal([]byte(challenge), []byte(entry.codeChallenge)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+	if len(codeVerifier) < 43 || len(codeVerifier) > 128 || !hmac.Equal([]byte(challenge), []byte(entry.codeChallenge)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
 
 	token := s.SignToken(s.cfg.TokenTTL)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": token,
 		"token_type":   "Bearer",
 		"expires_in":   s.cfg.TokenTTL,
@@ -387,7 +468,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderConsentPage(w http.ResponseWriter, p map[string]string, errorMsg string, fatal bool, status int) {
-	var lede, body, stamp string
+	var lede, body, stamp, notice string
 
 	if fatal {
 		lede = fmt.Sprintf("Запрос на доступ не прошёл проверку. %s", html.EscapeString(errorMsg))
@@ -403,14 +484,19 @@ func (s *Server) renderConsentPage(w http.ResponseWriter, p map[string]string, e
 		for _, k := range authFields {
 			hidden.WriteString(fmt.Sprintf(`<input type="hidden" name="%s" value="%s">`, k, html.EscapeString(p[k])))
 		}
+		if status == http.StatusTooManyRequests {
+			stamp = "Блокировка"
+			notice = fmt.Sprintf(`<p class="notice" role="alert">%s</p>`, html.EscapeString(errorMsg))
+		} else {
+			stamp = errorMsg
+		}
 		lede = fmt.Sprintf("<b>%s</b> просит доступ к справочнику АптекаМос. Только чтение: искать лекарства, цены и аптеки.", html.EscapeString(host))
 		body = fmt.Sprintf(`<form method="post" action="/oauth/authorize" class="rise r4">%s
       <input type="text" name="username" value="aptekamos-mcp" autocomplete="username" hidden>
       <label for="pw">Пароль владельца</label>
       <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
-      <button type="submit">Разрешить доступ</button>
-    </form>`, hidden.String())
-		stamp = errorMsg
+      %s<button type="submit">Разрешить доступ</button>
+    </form>`, hidden.String(), notice)
 	}
 
 	stampHTML := ""
@@ -425,6 +511,8 @@ func (s *Server) renderConsentPage(w http.ResponseWriter, p map[string]string, e
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(page))
@@ -488,6 +576,7 @@ const consentPageHTML = `<!doctype html>
   button:hover { filter: brightness(1.08); }
   button:active { transform: translateY(2px); }
   button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+  .notice { margin: 12px 0 0; color: var(--red); font-size: 12px; }
   .stamp {
     position: absolute; top: 92px; right: 18px; margin: 0; padding: 3px 10px 1px;
     border: 3px double var(--red); color: var(--red); mix-blend-mode: multiply;

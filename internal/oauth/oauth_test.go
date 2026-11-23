@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOAuthFlowAndBearerGate(t *testing.T) {
@@ -229,5 +230,233 @@ func TestOAuthFlowAndBearerGate(t *testing.T) {
 	}
 	if status := checkMCP(token); status != http.StatusOK {
 		t.Errorf("MCP valid token status = %d, want 200", status)
+	}
+}
+
+func TestProtectedResourceMetadataAndChallenge(t *testing.T) {
+	srv, err := NewServer(Config{
+		Password:     "pw",
+		TokenSecret:  "ssssssssssssssssssssssssssssssss",
+		ClientSecret: "cs",
+		PublicURL:    "https://aptekamos.example.com/",
+	})
+	if err != nil {
+		t.Fatalf("NewServer error: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := srv.BearerGate(mux)
+
+	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Forwarded-Host", "evil.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+		var out struct {
+			Resource string   `json:"resource"`
+			Servers  []string `json:"authorization_servers"`
+			Methods  []string `json:"bearer_methods_supported"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Resource != "https://aptekamos.example.com/mcp" ||
+			len(out.Servers) != 1 || out.Servers[0] != "https://aptekamos.example.com" ||
+			len(out.Methods) != 1 || out.Methods[0] != "header" {
+			t.Errorf("%s got %+v", path, out)
+		}
+	}
+
+	// Metadata uses PublicURL and ignores X-Forwarded-Host.
+	metaReq := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	metaReq.Header.Set("X-Forwarded-Host", "evil.example")
+	metaRec := httptest.NewRecorder()
+	h.ServeHTTP(metaRec, metaReq)
+	if !strings.Contains(metaRec.Body.String(), "https://aptekamos.example.com/oauth/token") || strings.Contains(metaRec.Body.String(), "evil") {
+		t.Errorf("metadata body = %s", metaRec.Body.String())
+	}
+
+	// 401 on /mcp carries RFC 9728 WWW-Authenticate resource_metadata.
+	mcpReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	mcpReq.Header.Set("X-Forwarded-Host", "evil.example")
+	mcpRec := httptest.NewRecorder()
+	h.ServeHTTP(mcpRec, mcpReq)
+	if mcpRec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", mcpRec.Code)
+	}
+	wantChallenge := `Bearer resource_metadata="https://aptekamos.example.com/.well-known/oauth-protected-resource/mcp"`
+	if got := mcpRec.Header().Get("WWW-Authenticate"); got != wantChallenge {
+		t.Errorf("WWW-Authenticate = %q, want %q", got, wantChallenge)
+	}
+
+	// PublicURL must start with https:// when set.
+	if _, err := NewServer(Config{
+		Password: "pw", TokenSecret: "ssssssssssssssssssssssssssssssss", ClientSecret: "cs",
+		PublicURL: "http://aptekamos.example.com",
+	}); err == nil {
+		t.Error("expected error for non-https PUBLIC_URL")
+	}
+}
+
+func TestDefaultRedirectURIsIncludeClaudeComAndClaudeAi(t *testing.T) {
+	srv, err := NewServer(Config{
+		Password:     "pw",
+		TokenSecret:  "ssssssssssssssssssssssssssssssss",
+		ClientSecret: "cs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := strings.Repeat("v", 50)
+	sha := sha256.Sum256([]byte(verifier))
+	challenge := b64Encode(sha[:])
+
+	for _, cb := range []string{
+		"https://claude.ai/api/mcp/auth_callback",
+		"https://claude.com/api/mcp/auth_callback",
+	} {
+		q := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {DefaultClientID},
+			"redirect_uri":          {cb},
+			"code_challenge":        {challenge},
+			"code_challenge_method": {"S256"},
+		}
+		rec := httptest.NewRecorder()
+		srv.HandleAuthorize(rec, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", cb, rec.Code)
+		}
+	}
+}
+
+func TestLockoutSlidingWindow(t *testing.T) {
+	srv, err := NewServer(Config{
+		Password:     "correct-password",
+		TokenSecret:  "ssssssssssssssssssssssssssssssss",
+		ClientSecret: "cs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := strings.Repeat("v", 50)
+	sha := sha256.Sum256([]byte(verifier))
+	challenge := b64Encode(sha[:])
+
+	postAuth := func(pw string) *httptest.ResponseRecorder {
+		v := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {DefaultClientID},
+			"redirect_uri":          {DefaultCallbackURI},
+			"code_challenge":        {challenge},
+			"code_challenge_method": {"S256"},
+			"password":              {pw},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(v.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		srv.HandleAuthorize(rec, req)
+		return rec
+	}
+
+	for i := 0; i < maxFailures; i++ {
+		if rec := postAuth("wrong"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	// Even the right password is locked out (429) once maxFailures is reached.
+	rec := postAuth("correct-password")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked out status = %d, want 429", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Блокировка") {
+		t.Errorf("lockout page missing stamp: %s", rec.Body.String())
+	}
+
+	// Aging failures outside lockWindow clears the lockout.
+	srv.mu.Lock()
+	old := time.Now().Add(-lockWindow - time.Second)
+	for i := range srv.fails {
+		srv.fails[i] = old
+	}
+	srv.mu.Unlock()
+
+	if rec := postAuth("correct-password"); rec.Code != http.StatusSeeOther {
+		t.Errorf("after window expiry status = %d, want 303", rec.Code)
+	}
+}
+
+func TestPKCEVerifierLengthAndMaxBody(t *testing.T) {
+	srv, err := NewServer(Config{
+		Password:     "pw",
+		TokenSecret:  "ssssssssssssssssssssssssssssssss",
+		ClientSecret: "cs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reject code_verifier shorter than 43 or longer than 128 even when challenge matches its SHA-256.
+	for _, vLen := range []int{42, 129} {
+		verifier := strings.Repeat("a", vLen)
+		sha := sha256.Sum256([]byte(verifier))
+		challenge := b64Encode(sha[:])
+
+		authVals := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {DefaultClientID},
+			"redirect_uri":          {DefaultCallbackURI},
+			"code_challenge":        {challenge},
+			"code_challenge_method": {"S256"},
+			"password":              {"pw"},
+		}
+		aReq := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(authVals.Encode()))
+		aReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		aRec := httptest.NewRecorder()
+		srv.HandleAuthorize(aRec, aReq)
+		if aRec.Code != http.StatusSeeOther {
+			t.Fatalf("len %d authorize = %d", vLen, aRec.Code)
+		}
+		loc, _ := url.Parse(aRec.Header().Get("Location"))
+		code := loc.Query().Get("code")
+
+		tokVals := url.Values{
+			"grant_type":    {"authorization_code"},
+			"code":          {code},
+			"redirect_uri":  {DefaultCallbackURI},
+			"client_id":     {DefaultClientID},
+			"client_secret": {"cs"},
+			"code_verifier": {verifier},
+		}
+		tReq := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokVals.Encode()))
+		tReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		tRec := httptest.NewRecorder()
+		srv.HandleToken(tRec, tReq)
+		if tRec.Code != http.StatusBadRequest || !strings.Contains(tRec.Body.String(), "invalid_grant") {
+			t.Errorf("verifier len %d: status=%d body=%s, want 400 invalid_grant", vLen, tRec.Code, tRec.Body.String())
+		}
+	}
+
+	// MaxBytesReader rejects > 64 KiB bodies on /oauth/authorize and /oauth/token.
+	huge := strings.Repeat("x", maxBody+1024)
+	for _, ep := range []struct {
+		path string
+		fn   http.HandlerFunc
+	}{
+		{"/oauth/authorize", srv.HandleAuthorize},
+		{"/oauth/token", srv.HandleToken},
+	} {
+		req := httptest.NewRequest(http.MethodPost, ep.path, strings.NewReader("data="+huge))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		ep.fn(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s oversized body status = %d, want 413", ep.path, rec.Code)
+		}
 	}
 }

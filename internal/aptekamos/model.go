@@ -77,25 +77,29 @@ type Card struct {
 // or nearest_pharmacies. A single pharmacy has pharmacy_id, name, address, metro, phones, features
 // and, when the source page carries them, coordinates (lat/lng), open_status and distance_km.
 type Row struct {
-	Kind          string         `json:"kind,omitempty"`
-	PharmacyID    int            `json:"pharmacy_id,omitempty"`
-	ID            int            `json:"-"`
-	NetworkID     int            `json:"network_id,omitempty"`
-	Name          string         `json:"name"`
-	Address       string         `json:"address,omitempty"`
-	Metro         string         `json:"metro,omitempty"`
-	Phones        []string       `json:"phones,omitempty"`
-	PriceMin      float64        `json:"price_min,omitempty"`
-	PriceMax      float64        `json:"price_max,omitempty"`
-	PriceNote     string         `json:"price_note,omitempty"`
-	Pharmacies    int            `json:"pharmacies,omitempty"`
-	Features      []string       `json:"features,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	PharmacyID int      `json:"pharmacy_id,omitempty"`
+	ID         int      `json:"-"`
+	NetworkID  int      `json:"network_id,omitempty"`
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	Metro      string   `json:"metro,omitempty"`
+	Phones     []string `json:"phones,omitempty"`
+	PriceMin   float64  `json:"price_min,omitempty"`
+	PriceMax   float64  `json:"price_max,omitempty"`
+	PriceNote  string   `json:"price_note,omitempty"`
+	Pharmacies int      `json:"pharmacies,omitempty"`
+	Features   []string `json:"features,omitempty"`
 	// FeatureCounts says, for a network row, how many of its pharmacies have each feature.
-	FeatureCounts map[string]int `json:"feature_counts,omitempty"`
-	OpenStatus    string         `json:"open_status,omitempty"`
-	Lat           float64        `json:"lat,omitempty"`
-	Lng           float64        `json:"lng,omitempty"`
-	DistanceKm    float64        `json:"distance_km,omitempty"`
+	FeatureCounts     map[string]int `json:"feature_counts,omitempty"`
+	OpenStatus        string         `json:"open_status,omitempty"`
+	Lat               float64        `json:"lat,omitempty"`
+	Lng               float64        `json:"lng,omitempty"`
+	DistanceKm        float64        `json:"distance_km,omitempty"`
+	MatchedCount      int            `json:"matched_count,omitempty"`
+	RequestedCount    int            `json:"requested_count,omitempty"`
+	MissingItems      []string       `json:"missing_items,omitempty"`
+	MatchedTotalPrice float64        `json:"matched_total_price,omitempty"`
 }
 
 // BasketSummary is what the shopping list page says about the whole list.
@@ -104,6 +108,7 @@ type BasketSummary struct {
 	Pharmacies int     `json:"-"` // said once, as the listing's own pharmacies
 	PriceMin   float64 `json:"price_min,omitempty"`
 	PriceMax   float64 `json:"price_max,omitempty"`
+	Partial    bool    `json:"partial,omitempty"`
 }
 
 // Section is one titled part of a drug instruction.

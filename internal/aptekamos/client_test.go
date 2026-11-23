@@ -84,7 +84,8 @@ func TestClientErrors(t *testing.T) {
 		t.Errorf("404: %v", err)
 	}
 	for _, p := range []string{"/captcha", "/forbidden", "/busy"} {
-		if _, err := c.Get(ctx, p, time.Minute); !errors.Is(err, ErrBlocked) {
+		bc := testClient(srv)
+		if _, err := bc.Get(ctx, p, time.Minute); !errors.Is(err, ErrBlocked) {
 			t.Errorf("%s: %v", p, err)
 		}
 	}
@@ -192,5 +193,173 @@ func TestClientSendsNoCookies(t *testing.T) {
 		if ck != "" {
 			t.Errorf("request %d carried Cookie %q", i+1, ck)
 		}
+	}
+}
+
+func TestCacheLRUEviction(t *testing.T) {
+	cc := newCache(120)
+	cc.put("a", &Page{Body: make([]byte, 60)}, time.Minute)
+	cc.put("b", &Page{Body: make([]byte, 60)}, time.Minute)
+	// Accessing "a" promotes it to most-recently-used so "b" is evicted next.
+	if cc.get("a") == nil {
+		t.Fatal("expected a in cache")
+	}
+	cc.put("c", &Page{Body: make([]byte, 60)}, time.Minute)
+	if cc.get("a") == nil {
+		t.Error("recently used entry a was evicted")
+	}
+	if cc.get("b") != nil {
+		t.Error("least recently used entry b survived")
+	}
+	if cc.get("c") == nil {
+		t.Error("newly inserted entry c missing")
+	}
+}
+
+func TestClientSingleflight(t *testing.T) {
+	var hits atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		_, _ = w.Write([]byte("<html>shared</html>"))
+	}))
+	defer srv.Close()
+	c := testClient(srv)
+
+	const n = 8
+	var wg sync.WaitGroup
+	pages := make([]*Page, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			pages[i], errs[i] = c.Get(context.Background(), "/same", time.Minute)
+		}(i)
+	}
+	<-started
+	// Give the other goroutines a moment to queue on the flight.
+	time.Sleep(25 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("server hits = %d, want 1", got)
+	}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Errorf("caller %d err = %v", i, errs[i])
+		} else if string(pages[i].Body) != "<html>shared</html>" {
+			t.Errorf("caller %d body = %q", i, pages[i].Body)
+		}
+	}
+}
+
+func TestClientSingleflightCancelOneWaiter(t *testing.T) {
+	var hits atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	}))
+	defer srv.Close()
+	c := testClient(srv)
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ctx1, "/one", time.Minute)
+		errCh <- err
+	}()
+	<-started
+
+	pageCh := make(chan *Page, 1)
+	go func() {
+		p, err := c.Get(context.Background(), "/one", time.Minute)
+		if err != nil {
+			t.Errorf("waiter 2 err = %v", err)
+		}
+		pageCh <- p
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	// Cancelling caller 1 must return context.Canceled immediately without aborting caller 2.
+	cancel1()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Errorf("caller 1 err = %v, want context.Canceled", err)
+	}
+
+	close(release)
+	if p := <-pageCh; p == nil || string(p.Body) != "<html>ok</html>" {
+		t.Errorf("caller 2 page = %+v", p)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestClientBlockedCooldown(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		switch r.URL.Path {
+		case "/cached":
+			_, _ = w.Write([]byte("<html>cached</html>"))
+		case "/block":
+			w.WriteHeader(203)
+		default:
+			_, _ = w.Write([]byte("<html>ok</html>"))
+		}
+	}))
+	defer srv.Close()
+	c := testClient(srv)
+	c.BlockedCooldown = 60 * time.Millisecond
+	ctx := context.Background()
+
+	// Warm one cached entry before the block.
+	if _, err := c.Get(ctx, "/cached", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	hitsBefore := hits.Load()
+
+	// Trigger block (203).
+	_, err := c.Get(ctx, "/block", time.Minute)
+	if !errors.Is(err, ErrBlocked) || !strings.Contains(err.Error(), "retry after") {
+		t.Fatalf("blocked err = %v", err)
+	}
+	if hits.Load() != hitsBefore+1 {
+		t.Fatalf("expected 1 hit on /block, got %d", hits.Load()-hitsBefore)
+	}
+
+	// Uncached request during cooldown fails fast without hitting the server.
+	_, err = c.Get(ctx, "/other", time.Minute)
+	if !errors.Is(err, ErrBlocked) || !strings.Contains(err.Error(), "retry after") {
+		t.Fatalf("cooldown err = %v", err)
+	}
+	if hits.Load() != hitsBefore+1 {
+		t.Errorf("cooldown did not short-circuit: hits = %d, want %d", hits.Load(), hitsBefore+1)
+	}
+
+	// Cached page is still served during cooldown.
+	if p, err := c.Get(ctx, "/cached", time.Minute); err != nil || string(p.Body) != "<html>cached</html>" {
+		t.Errorf("cached page during cooldown = %+v, %v", p, err)
+	}
+
+	// After cooldown expires, requests reach the server again.
+	time.Sleep(80 * time.Millisecond)
+	p, err := c.Get(ctx, "/other", time.Minute)
+	if err != nil || string(p.Body) != "<html>ok</html>" {
+		t.Errorf("after cooldown = %+v, %v", p, err)
+	}
+	if hits.Load() != hitsBefore+2 {
+		t.Errorf("expected server hit after cooldown, hits = %d", hits.Load())
 	}
 }

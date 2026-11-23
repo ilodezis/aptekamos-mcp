@@ -553,21 +553,27 @@ func (s *Server) registerTools() {
 	addTool(s, &mcp.Tool{
 		Name: "shopping_list",
 		Description: "Pharmacies that have every product of a list, with the price of the whole list there " +
-			"and a summary (how many pharmacies, total price range). Each item is a drug_id or brand_id + form_id, optionally with pack. " + rowsNote,
-	}, object(merge(props{"items": map[string]any{"type": "array", "minItems": 1, "maxItems": 10,
-		"description": "Products of the list.", "items": map[string]any{"type": "object", "properties": listItemProps, "additionalProperties": false}}},
-		regionProps, offerFilterProps, sortProp, coordProps, pageProps(20, 100)), "items"),
+			"and a summary (how many pharmacies, total price range). Each item is a drug_id or brand_id + form_id, optionally with pack. " +
+			"Pass allow_partial=true (default false) to fall back to per-item offers when no pharmacy has the full list: " +
+			"pharmacies are ranked by matched_count/requested_count with missing_items and matched_total_price (capped at 200, paginated with limit/offset). " + rowsNote,
+	}, object(merge(props{
+		"items": map[string]any{"type": "array", "minItems": 1, "maxItems": 10,
+			"description": "Products of the list.", "items": map[string]any{"type": "object", "properties": listItemProps, "additionalProperties": false}},
+		"allow_partial": map[string]any{"type": "boolean", "default": false,
+			"description": "When true and no pharmacy stocks every item, fetch per-item offers and rank pharmacies by matched_count descending (with missing_items and matched_total_price)."},
+	}, regionProps, offerFilterProps, sortProp, coordProps, pageProps(20, 100)), "items"),
 		func(ctx context.Context, a struct {
 			filterArgs
 			pageArgs
-			Items  []listItemArgs `json:"items"`
-			Region string         `json:"region"`
+			Items        []listItemArgs `json:"items"`
+			Region       string         `json:"region"`
+			AllowPartial bool           `json:"allow_partial"`
 		}) (any, error) {
 			targets := make([]aptekamos.Target, len(a.Items))
 			for i, it := range a.Items {
 				targets[i] = it.target()
 			}
-			l, err := s.svc.ShoppingList(ctx, targets, a.filters(), a.Region)
+			l, err := s.svc.ShoppingListPartial(ctx, targets, a.filters(), a.Region, a.AllowPartial)
 			if err != nil {
 				return nil, err
 			}

@@ -2,6 +2,11 @@ package aptekamos
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -465,5 +470,166 @@ func TestOfferAtCollapsesDuplicates(t *testing.T) {
 		if strings.Contains(it.Name, " 5мг ") && (it.Price != 1490 || len(it.Prices) != 2) {
 			t.Errorf("5 mg = %+v", it)
 		}
+	}
+}
+
+func b64Link(u string) string {
+	return base64.StdEncoding.EncodeToString([]byte(u))
+}
+
+func cardHTML(name string, pharmacies int, key string) string {
+	basket := ""
+	if key != "" {
+		basket = `<div data-go-to-link="` + b64Link("https://aptekamos.ru/tovary?aid=sisd&productids="+key) + `"></div>`
+	}
+	return fmt.Sprintf(`<html><body><div id="am-pc-products-fragment"><div class="am-pc-product">
+		<h1 class="am-pc-product-name">%s</h1>
+		<div id="am-pc-orgs-count">%d</div>
+	</div></div>%s</body></html>`, name, pharmacies, basket)
+}
+
+func mapHTML(orgsJSON string) string {
+	escaped := strings.ReplaceAll(orgsJSON, `"`, `&quot;`)
+	return `<html><body><div id="am-pc-modal-map-c" data-orgs="` + escaped + `"></div></body></html>`
+}
+
+func TestShoppingListPartialFallback(t *testing.T) {
+	var reqs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.URL.Path)
+		switch r.URL.Path {
+		case "/tovary/lekarstva/x-1/x-101/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug One", 2, "key1")))
+		case "/tovary/lekarstva/x-1/x-102/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug Two", 3, "key2")))
+		case "/tovary/lekarstva/x-1/x-103/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug Three", 1, "key3")))
+		case "/tovary/lekarstva/x-1/x-104/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug Unavailable", 0, "")))
+		case "/korzina":
+			_, _ = w.Write([]byte(`<html><body><div id="am-pc-add-product-comment-count">3</div><div id="am-pc-add-product-orgs-count-val">0</div><div id="am-pc-orgs-fragment"><div class="am-pc-org-c"></div></div></body></html>`))
+		case "/tovary/lekarstva/x-1/x-101/ceni/na-karte":
+			_, _ = w.Write([]byte(mapHTML(`[
+				{"orgId":10,"orgLat":55.75,"orgLng":37.61,"orgName":"Apteka 10","orgAddress":"Addr 10","minPriceStr":"100"},
+				{"orgId":20,"orgLat":55.76,"orgLng":37.62,"orgName":"Apteka 20","orgAddress":"Addr 20","minPriceStr":"200"},
+				{"orgId":30,"orgLat":55.77,"orgLng":37.63,"orgName":"Apteka 30","orgAddress":"Addr 30","minPriceStr":"300"}
+			]`)))
+		case "/tovary/lekarstva/x-1/x-102/ceni/na-karte":
+			_, _ = w.Write([]byte(mapHTML(`[
+				{"orgId":10,"orgLat":55.75,"orgLng":37.61,"orgName":"Apteka 10","minPriceStr":"150"},
+				{"orgId":20,"orgLat":55.76,"orgLng":37.62,"orgName":"Apteka 20","minPriceStr":"100"}
+			]`)))
+		case "/tovary/lekarstva/x-1/x-103/ceni/na-karte":
+			_, _ = w.Write([]byte(mapHTML(`[
+				{"orgId":20,"orgLat":55.76,"orgLng":37.62,"orgName":"Apteka 20","minPriceStr":"50"}
+			]`)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient()
+	c.BaseURL = srv.URL
+	c.MinInterval = 0
+	s := NewService(c)
+	ctx := context.Background()
+
+	items := []Target{{DrugID: 101}, {DrugID: 102}, {DrugID: 103}}
+
+	// allow_partial=false returns empty full-basket result without per-item map requests.
+	full, err := s.ShoppingListPartial(ctx, items, Filters{}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Rows) != 0 || full.Total != 0 {
+		t.Fatalf("expected empty full-basket result, got %+v", full)
+	}
+	for _, r := range reqs {
+		if strings.HasSuffix(r, "/na-karte") {
+			t.Errorf("allow_partial=false fetched map %s", r)
+		}
+	}
+
+	// allow_partial=true falls back to per-item offers and ranks by matched_count desc, then price asc.
+	partial, err := s.ShoppingListPartial(ctx, items, Filters{}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial.Summary == nil || !partial.Summary.Partial || partial.Summary.Items != 3 {
+		t.Fatalf("summary = %+v", partial.Summary)
+	}
+	if partial.Total != 3 || len(partial.Rows) != 3 {
+		t.Fatalf("total=%d rows=%d", partial.Total, len(partial.Rows))
+	}
+	if r := partial.Rows[0]; r.PharmacyID != 20 || r.MatchedCount != 3 || r.RequestedCount != 3 || len(r.MissingItems) != 0 || r.MatchedTotalPrice != 350 {
+		t.Errorf("rank 0 = %+v", r)
+	}
+	if r := partial.Rows[1]; r.PharmacyID != 10 || r.MatchedCount != 2 || r.RequestedCount != 3 || !slices.Equal(r.MissingItems, []string{"Drug Three"}) || r.MatchedTotalPrice != 250 {
+		t.Errorf("rank 1 = %+v", r)
+	}
+	if r := partial.Rows[2]; r.PharmacyID != 30 || r.MatchedCount != 1 || r.RequestedCount != 3 || !slices.Equal(r.MissingItems, []string{"Drug Two", "Drug Three"}) || r.MatchedTotalPrice != 300 {
+		t.Errorf("rank 2 = %+v", r)
+	}
+
+	// Unavailable item (no productKey): error when allow_partial=false, partial fallback when true.
+	withMissing := []Target{{DrugID: 101}, {DrugID: 104}}
+	if _, err := s.ShoppingListPartial(ctx, withMissing, Filters{}, "", false); err == nil {
+		t.Error("expected error for unavailable item when allow_partial=false")
+	}
+	reqs = nil
+	withMissingRes, err := s.ShoppingListPartial(ctx, withMissing, Filters{}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withMissingRes.Total != 3 || withMissingRes.Rows[0].MatchedCount != 1 || withMissingRes.Rows[0].RequestedCount != 2 ||
+		!slices.Equal(withMissingRes.Rows[0].MissingItems, []string{"Drug Unavailable"}) {
+		t.Errorf("withMissingRes = %+v", withMissingRes.Rows[0])
+	}
+	for _, r := range reqs {
+		if strings.Contains(r, "104/ceni/na-karte") {
+			t.Errorf("fetched map for unavailable item: %s", r)
+		}
+	}
+}
+
+func TestShoppingListPartialCapAndDistanceTieBreak(t *testing.T) {
+	var many []string
+	for i := 1; i <= 210; i++ {
+		many = append(many, fmt.Sprintf(`{"orgId":%d,"orgLat":55.%04d,"orgLng":37.60,"orgName":"P%d","minPriceStr":"100"}`, i, i*10, i))
+	}
+	manyJSON := "[" + strings.Join(many, ",") + "]"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tovary/lekarstva/x-1/x-201/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug A", 210, "k1")))
+		case "/tovary/lekarstva/x-1/x-202/ceni":
+			_, _ = w.Write([]byte(cardHTML("Drug B", 0, "")))
+		case "/tovary/lekarstva/x-1/x-201/ceni/na-karte":
+			_, _ = w.Write([]byte(mapHTML(manyJSON)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient()
+	c.BaseURL = srv.URL
+	c.MinInterval = 0
+	s := NewService(c)
+
+	res, err := s.ShoppingListPartial(context.Background(), []Target{{DrugID: 201}, {DrugID: 202}}, Filters{Sort: "near", Lat: 55.0010, Lng: 37.60}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 210 {
+		t.Errorf("Total = %d, want 210", res.Total)
+	}
+	if len(res.Rows) != maxPartialPharmacies {
+		t.Errorf("len(Rows) = %d, want cap %d", len(res.Rows), maxPartialPharmacies)
+	}
+	if res.Rows[0].PharmacyID != 1 {
+		t.Errorf("nearest pharmacy = %d, want 1", res.Rows[0].PharmacyID)
 	}
 }

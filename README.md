@@ -41,7 +41,7 @@ AptekaMos collects the price lists of thousands of pharmacies: about 5,000 in Mo
 | `find_pharmacies` | Pharmacies of a region by location, metro, chain, street, name, features |
 | `substitutes` | Other brands and forms with the same active substance |
 | `browse` | Everything for an active substance, a pharmacological group (its own node of the site tree, not all analogues) or a brand |
-| `shopping_list` | Pharmacies that have every product of a list, with the total price there |
+| `shopping_list` | Pharmacies that have every product of a list (with optional `allow_partial=true` fallback ranking partial matches by `matched_count`), with the total price there |
 | `reference` | Ids for filters: regions, cities and districts, metro, chains, streets |
 
 Two kinds of product id: `drug_id` is one exact product (brand, form and dosage); `brand_id` + `form_id` is a brand in one dosage form across its dosages. A pharmacy is `pharmacy_id` in every answer. Product rows nobody sells have no basket link on the site, so their `brand_id`/`form_id` are filled in from rows of the same brand and form, or from the product's card. Prices are in roubles, straight from the pharmacies' price lists.
@@ -56,6 +56,7 @@ Answers are kept small, since a model pays for every character:
 - `drug_instruction` returns an overview by default: every section's title and its first 300 characters (`full_chars` is the real length of a cut one), the ATC code, and ICD-10 codes, conditions and sources when they are short. `sections=["дозиров", "противопоказ"]` returns the full text of the sections whose title contains a word (case-insensitive) together with ICD-10, conditions and sources; `max_chars` cuts each section. On the tirzepatide leaflet this is about 4.5k characters of JSON instead of 23k.
 - Lists are always arrays, never `null`. An empty answer carries a `hint`: a name typed in Latin letters only is retried once in Cyrillic (`sedzharo` finds «Седжаро»), and if nothing is found `search_drugs` says to write the name in Russian; `reference(kind=networks)` with no match points to `find_pharmacies(pharmacy_query=…)`, because a lone pharmacy is not a chain.
 - `pharmacy_price_list` searches by trade name, not by active substance (`тирзепатид` finds nothing, `седжаро` does).
+- `shopping_list` looks for pharmacies carrying every item (`allow_partial=false` by default). With `allow_partial=true`, if no pharmacy has the full list, it fetches per-item offers and ranks pharmacies by `matched_count`/`requested_count`, `missing_items`, and `matched_total_price` (capped at 200, paginated with `limit`/`offset`).
 
 ### Example
 
@@ -77,7 +78,7 @@ Or with Docker: copy `.env.example` to `.env`, fill it in, and run `docker compo
 
 In HTTP mode `/mcp` needs a Bearer token. The server is its own OAuth provider for a single owner:
 
-1. Set `PASSWORD`, `TOKEN_SECRET` (`openssl rand -base64 48`) and `CLIENT_SECRET` in `.env`; `CLIENT_ID` defaults to `aptekamos-claude-connector`.
+1. Set `PASSWORD`, `TOKEN_SECRET` (`openssl rand -base64 48`) and `CLIENT_SECRET` in `.env`; `CLIENT_ID` defaults to `aptekamos-claude-connector`. Optionally set `PUBLIC_URL` (for example `https://example.com`) so OAuth discovery metadata and `WWW-Authenticate` headers do not rely on proxy headers. Default redirect URIs allow both `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`.
 2. In Claude.ai: Settings → Connectors → Add custom connector, URL `https://<your host>/mcp`, and in advanced settings the client id and secret.
 3. Claude opens the consent page; type the password once. Tokens live a year.
 
@@ -146,7 +147,7 @@ Not affiliated with AptekaMos or its owner. For personal, non-commercial use; re
 | `find_pharmacies` | Аптеки региона по месту, метро, сети, улице, названию, услугам |
 | `substitutes` | Другие торговые названия и формы с тем же действующим веществом |
 | `browse` | Всё по МНН, фармгруппе (это отдельный узел дерева сайта, а не все аналоги) или бренду |
-| `shopping_list` | Аптеки, где есть весь список, и сколько он там стоит |
+| `shopping_list` | Аптеки, где есть весь список (и при `allow_partial=true` — частичные совпадения по числу найденных позиций `matched_count`), и сколько он там стоит |
 | `reference` | Id для фильтров: регионы, города и округа, метро, сети, улицы |
 
 Два вида id препарата: `drug_id` — конкретный товар (бренд, форма, дозировка); `brand_id` + `form_id` — бренд в одной лекарственной форме во всех дозировках. Аптека везде называется `pharmacy_id`. У строк, которые никто не продаёт, на сайте нет кнопки корзины, поэтому их `brand_id`/`form_id` подставляются по строкам того же бренда и формы или по карточке товара. Цены в рублях, прямо из прайсов аптек.
@@ -161,6 +162,7 @@ Not affiliated with AptekaMos or its owner. For personal, non-commercial use; re
 - `drug_instruction` по умолчанию даёт обзор: заголовок и первые 300 символов каждого раздела (`full_chars` — настоящая длина обрезанного), код АТХ, а МКБ-10, состояния и источники — если они короткие. `sections=["дозиров", "противопоказ"]` отдаёт полный текст разделов, в заголовке которых есть слово (без учёта регистра), вместе с МКБ-10, состояниями и источниками; `max_chars` обрезает каждый раздел. На листке тирзепатида это около 4,5 тыс. символов JSON вместо 23 тыс.
 - Списки всегда массивы, не `null`. У пустого ответа есть `hint`: название только латиницей повторяется один раз кириллицей (`sedzharo` находит «Седжаро»), а если и так пусто, `search_drugs` советует писать по-русски; `reference(kind=networks)` без совпадений отправляет к `find_pharmacies(pharmacy_query=…)`: одиночная аптека — не сеть.
 - `pharmacy_price_list` ищет по торговому названию, а не по МНН (`тирзепатид` даёт 0, `седжаро` находит).
+- `shopping_list` по умолчанию (`allow_partial=false`) ищет аптеки, где есть все позиции списка. При `allow_partial=true`, если таких аптек нет, сервер запрашивает предложения по отдельным позициям и ранжирует аптеки по `matched_count`/`requested_count`, возвращая `missing_items` и `matched_total_price` (до 200 аптек, с пагинацией `limit`/`offset`).
 
 ### Пример
 
@@ -182,7 +184,7 @@ ADDR=:8130 PASSWORD=… TOKEN_SECRET=… CLIENT_SECRET=… ./aptekamos-mcp   # H
 
 В HTTP-режиме `/mcp` требует Bearer-токен. Сервер сам себе OAuth-провайдер для одного владельца:
 
-1. Задайте в `.env` `PASSWORD`, `TOKEN_SECRET` (`openssl rand -base64 48`) и `CLIENT_SECRET`; `CLIENT_ID` по умолчанию `aptekamos-claude-connector`.
+1. Задайте в `.env` `PASSWORD`, `TOKEN_SECRET` (`openssl rand -base64 48`) и `CLIENT_SECRET`; `CLIENT_ID` по умолчанию `aptekamos-claude-connector`. При необходимости задайте `PUBLIC_URL` (например, `https://example.com`), чтобы OAuth-метаданные и заголовок `WWW-Authenticate` не зависели от прокси-заголовков. По умолчанию разрешены оба callback URL: `https://claude.ai/api/mcp/auth_callback` и `https://claude.com/api/mcp/auth_callback`.
 2. В Claude.ai: Settings → Connectors → Add custom connector, URL `https://<ваш хост>/mcp`, в расширенных настройках client id и secret.
 3. Claude откроет страницу согласия; пароль вводится один раз. Токен живёт год.
 

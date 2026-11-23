@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"slices"
 	"strings"
@@ -552,5 +555,91 @@ func TestPricePrecisionListVsPharmacy(t *testing.T) {
 	prices, ok := first["prices"].([]any)
 	if !ok || len(prices) != 2 || prices[0].(float64) != 195 || prices[1].(float64) != 195.8 {
 		t.Errorf("price_at_pharmacy prices = %v, want [195, 195.8]", first["prices"])
+	}
+}
+
+func TestShoppingListAllowPartialTool(t *testing.T) {
+	b64 := func(u string) string { return base64.StdEncoding.EncodeToString([]byte(u)) }
+	card := func(name string, n int, key string) string {
+		return fmt.Sprintf(`<html><body><div id="am-pc-products-fragment"><div class="am-pc-product"><h1 class="am-pc-product-name">%s</h1><div id="am-pc-orgs-count">%d</div></div></div><div data-go-to-link="%s"></div></body></html>`,
+			name, n, b64("https://aptekamos.ru/tovary?aid=sisd&productids="+key))
+	}
+	mapPage := func(raw string) string {
+		return `<html><body><div id="am-pc-modal-map-c" data-orgs="` + strings.ReplaceAll(raw, `"`, `&quot;`) + `"></div></body></html>`
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tovary/lekarstva/x-1/x-101/ceni":
+			_, _ = w.Write([]byte(card("Alpha", 2, "k1")))
+		case "/tovary/lekarstva/x-1/x-102/ceni":
+			_, _ = w.Write([]byte(card("Beta", 2, "k2")))
+		case "/korzina":
+			_, _ = w.Write([]byte(`<html><body><div id="am-pc-add-product-comment-count">2</div><div id="am-pc-add-product-orgs-count-val">0</div><div id="am-pc-orgs-fragment"><div class="am-pc-org-c"></div></div></body></html>`))
+		case "/tovary/lekarstva/x-1/x-101/ceni/na-karte":
+			_, _ = w.Write([]byte(mapPage(`[{"orgId":1,"orgName":"One","minPriceStr":"120"},{"orgId":2,"orgName":"Two","minPriceStr":"90"}]`)))
+		case "/tovary/lekarstva/x-1/x-102/ceni/na-karte":
+			_, _ = w.Write([]byte(mapPage(`[{"orgId":2,"orgName":"Two","minPriceStr":"60"},{"orgId":3,"orgName":"Three","minPriceStr":"50"}]`)))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := aptekamos.NewClient()
+	c.BaseURL = srv.URL
+	c.MinInterval = 0
+	s := NewServer(aptekamos.NewService(c))
+
+	st, ct := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	go func() { _ = s.MCPServer().Run(ctx, st) }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	// Verify tool description documents allow_partial.
+	toolsRes, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range toolsRes.Tools {
+		if tool.Name == "shopping_list" && !strings.Contains(tool.Description, "allow_partial") {
+			t.Errorf("shopping_list description missing allow_partial: %s", tool.Description)
+		}
+	}
+
+	// Default allow_partial=false returns 0 rows.
+	defOut := mustCall(t, cs, "shopping_list", map[string]any{
+		"items": []any{map[string]any{"drug_id": 101}, map[string]any{"drug_id": 102}},
+	})
+	if len(list(defOut, "rows")) != 0 {
+		t.Fatalf("expected 0 rows when allow_partial=false, got %v", defOut["rows"])
+	}
+
+	// allow_partial=true ranks pharmacy 2 first (2/2), then 3 (1/2, price 50), then 1 (1/2, price 120), with pagination.
+	page1 := mustCall(t, cs, "shopping_list", map[string]any{
+		"items":         []any{map[string]any{"drug_id": 101}, map[string]any{"drug_id": 102}},
+		"allow_partial": true,
+		"limit":         1,
+		"offset":        1,
+	})
+	if page1["rows_total"] != float64(3) || page1["offset"] != float64(1) || page1["pharmacies"] != float64(3) {
+		t.Fatalf("paging metadata = %v", page1)
+	}
+	sum := page1["list"].(map[string]any)
+	if sum["partial"] != true || sum["items"] != float64(2) {
+		t.Errorf("list summary = %v", sum)
+	}
+	rows := list(page1, "rows")
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1", len(rows))
+	}
+	r := obj(rows[0])
+	if r["pharmacy_id"] != float64(3) || r["matched_count"] != float64(1) || r["requested_count"] != float64(2) ||
+		r["matched_total_price"] != float64(50) || len(list(r, "missing_items")) != 1 || list(r, "missing_items")[0] != "Alpha" {
+		t.Errorf("paged row = %v", r)
 	}
 }

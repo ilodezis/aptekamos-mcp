@@ -72,6 +72,7 @@ func runHTTP(srv *internalmcp.Server, addr string) {
 		TokenSecret:  os.Getenv("TOKEN_SECRET"),
 		ClientID:     os.Getenv("CLIENT_ID"),
 		ClientSecret: os.Getenv("CLIENT_SECRET"),
+		PublicURL:    os.Getenv("PUBLIC_URL"),
 		RedirectURIs: redirectURIs,
 	})
 	if err != nil {
@@ -82,9 +83,7 @@ func runHTTP(srv *internalmcp.Server, addr string) {
 		&mcp.StreamableHTTPOptions{DisableLocalhostProtection: true})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/oauth-authorization-server", gate.HandleMetadata)
-	mux.HandleFunc("/oauth/authorize", gate.HandleAuthorize)
-	mux.HandleFunc("/oauth/token", gate.HandleToken)
+	gate.Register(mux)
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

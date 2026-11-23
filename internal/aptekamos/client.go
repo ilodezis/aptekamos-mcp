@@ -19,9 +19,11 @@ import (
 const (
 	// DefaultMinInterval spaces requests to the site; AptekaMos is a small site and gets two a second at most.
 	DefaultMinInterval = 500 * time.Millisecond
-	defaultCacheBytes  = 192 << 20
-	userAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
-	maxBodyBytes       = 64 << 20
+	// DefaultBlockedCooldown pauses uncached site requests after AptekaMos returns a block/captcha/429.
+	DefaultBlockedCooldown = 45 * time.Second
+	defaultCacheBytes      = 192 << 20
+	userAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
+	maxBodyBytes           = 64 << 20
 )
 
 var (
@@ -44,21 +46,36 @@ func (p *Page) Doc() (*goquery.Document, error) {
 
 // Client fetches AptekaMos pages one at a time with a pause between requests and caches them.
 type Client struct {
-	HTTP        *http.Client
-	BaseURL     string
-	MinInterval time.Duration
+	HTTP            *http.Client
+	BaseURL         string
+	MinInterval     time.Duration
+	BlockedCooldown time.Duration
 
-	cache     *cache
-	rateMu    sync.Mutex
-	nextStart time.Time
+	cache        *cache
+	rateMu       sync.Mutex
+	nextStart    time.Time
+	blockMu      sync.Mutex
+	blockedUntil time.Time
+	flightMu     sync.Mutex
+	flights      map[string]*flight
+}
+
+type flight struct {
+	done    chan struct{}
+	waiters int
+	cancel  context.CancelFunc
+	page    *Page
+	err     error
 }
 
 func NewClient() *Client {
 	return &Client{
-		HTTP:        &http.Client{Timeout: 60 * time.Second},
-		BaseURL:     siteHost,
-		MinInterval: DefaultMinInterval,
-		cache:       newCache(defaultCacheBytes),
+		HTTP:            &http.Client{Timeout: 60 * time.Second},
+		BaseURL:         siteHost,
+		MinInterval:     DefaultMinInterval,
+		BlockedCooldown: DefaultBlockedCooldown,
+		cache:           newCache(defaultCacheBytes),
+		flights:         make(map[string]*flight),
 	}
 }
 
@@ -86,12 +103,115 @@ func (c *Client) throttle(ctx context.Context) error {
 	}
 }
 
+func (c *Client) blockedRemaining() time.Duration {
+	if c.BlockedCooldown <= 0 {
+		return 0
+	}
+	c.blockMu.Lock()
+	defer c.blockMu.Unlock()
+	if c.blockedUntil.IsZero() {
+		return 0
+	}
+	rem := time.Until(c.blockedUntil)
+	if rem <= 0 {
+		c.blockedUntil = time.Time{}
+		return 0
+	}
+	return rem
+}
+
+func (c *Client) tripBlocked() time.Duration {
+	if c.BlockedCooldown <= 0 {
+		return 0
+	}
+	c.blockMu.Lock()
+	c.blockedUntil = time.Now().Add(c.BlockedCooldown)
+	c.blockMu.Unlock()
+	return c.BlockedCooldown
+}
+
+func blockedError(retryAfter time.Duration) error {
+	if retryAfter <= 0 {
+		return ErrBlocked
+	}
+	if retryAfter >= time.Second {
+		retryAfter = retryAfter.Round(time.Second)
+		if retryAfter < time.Second {
+			retryAfter = time.Second
+		}
+	} else {
+		retryAfter = retryAfter.Round(time.Millisecond)
+		if retryAfter <= 0 {
+			retryAfter = time.Millisecond
+		}
+	}
+	return fmt.Errorf("%w (retry after %s)", ErrBlocked, retryAfter)
+}
+
 // Get fetches a site path ("/tovary?q=…"). A ttl above zero serves and stores the page in the cache.
+// Concurrent uncached requests for the same path share one in-flight fetch.
 func (c *Client) Get(ctx context.Context, path string, ttl time.Duration) (*Page, error) {
 	if ttl > 0 {
 		if p := c.cache.get(path); p != nil {
 			return p, nil
 		}
+	}
+	if rem := c.blockedRemaining(); rem > 0 {
+		return nil, blockedError(rem)
+	}
+
+	c.flightMu.Lock()
+	if c.flights == nil {
+		c.flights = make(map[string]*flight)
+	}
+	if f, ok := c.flights[path]; ok {
+		f.waiters++
+		c.flightMu.Unlock()
+		return c.waitFlight(ctx, path, f, ttl)
+	}
+	fctx, cancel := context.WithCancel(context.Background())
+	f := &flight{done: make(chan struct{}), waiters: 1, cancel: cancel}
+	c.flights[path] = f
+	c.flightMu.Unlock()
+
+	go func() {
+		defer cancel()
+		p, err := c.fetch(fctx, path, ttl)
+		f.page, f.err = p, err
+		c.flightMu.Lock()
+		if c.flights[path] == f {
+			delete(c.flights, path)
+		}
+		c.flightMu.Unlock()
+		close(f.done)
+	}()
+	return c.waitFlight(ctx, path, f, ttl)
+}
+
+func (c *Client) waitFlight(ctx context.Context, path string, f *flight, ttl time.Duration) (*Page, error) {
+	select {
+	case <-f.done:
+		if f.err == nil && ttl > 0 && c.cache.get(path) == nil {
+			c.cache.put(path, f.page, ttl)
+		}
+		return f.page, f.err
+	case <-ctx.Done():
+		c.flightMu.Lock()
+		f.waiters--
+		if f.waiters == 0 {
+			if c.flights[path] == f {
+				delete(c.flights, path)
+			}
+			f.cancel()
+		}
+		c.flightMu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) fetch(ctx context.Context, path string, ttl time.Duration) (*Page, error) {
+	if rem := c.blockedRemaining(); rem > 0 {
+		return nil, blockedError(rem)
 	}
 	if err := c.throttle(ctx); err != nil {
 		return nil, err
@@ -116,11 +236,11 @@ func (c *Client) Get(ctx context.Context, path string, ttl time.Duration) (*Page
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, ErrNotFound
 	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == 203:
-		return nil, ErrBlocked
+		return nil, blockedError(c.tripBlocked())
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("AptekaMos answered HTTP %d for %s", resp.StatusCode, path)
 	case blockedRe.Match(body):
-		return nil, ErrBlocked
+		return nil, blockedError(c.tripBlocked())
 	}
 	p := &Page{Body: body, Path: strings.TrimPrefix(resp.Request.URL.String(), c.BaseURL)}
 	if ttl > 0 {
@@ -129,7 +249,7 @@ func (c *Client) Get(ctx context.Context, path string, ttl time.Duration) (*Page
 	return p, nil
 }
 
-// cache keeps recent pages up to a byte budget, dropping the oldest first.
+// cache keeps recent pages up to a byte budget, dropping the least recently used first.
 type cache struct {
 	mu    sync.Mutex
 	max   int
@@ -160,12 +280,13 @@ func (c *cache) get(key string) *Page {
 		c.remove(el)
 		return nil
 	}
+	c.order.MoveToBack(el)
 	return e.page
 }
 
 func (c *cache) put(key string, p *Page, ttl time.Duration) {
 	size := len(p.Body)
-	if size > c.max {
+	if c.max <= 0 || size > c.max {
 		return
 	}
 	c.mu.Lock()
